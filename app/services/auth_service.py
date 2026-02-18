@@ -82,11 +82,9 @@ async def social_login(
     email: str,
     name: str | None,
     avatar_url: str | None,
-    client_id: str | None,
-    request: Request,
     db: AsyncSession,
-) -> TokenResponse:
-    """Handle social OAuth login - find or create user, link social account."""
+) -> User:
+    """Handle social OAuth login - find or create user, link social account. Returns User."""
     # 1. Check if social account already linked
     result = await db.execute(
         select(SocialAccount)
@@ -121,10 +119,7 @@ async def social_login(
 
     await db.commit()
     await db.refresh(user)
-
-    tokens = await _issue_tokens(user, client_id, db)
-    await _log_login(db, user.id, client_id, provider, request, success=True)
-    return tokens
+    return user
 
 
 # ==================== Token Operations ====================

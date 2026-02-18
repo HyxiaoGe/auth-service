@@ -38,6 +38,11 @@ class OAuthCallbackParams(BaseModel):
     state: str | None = None
 
 
+class OAuthTokenExchangeRequest(BaseModel):
+    code: str
+    client_id: str
+
+
 # ==================== User ====================
 
 class UserInfo(BaseModel):

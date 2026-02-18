@@ -36,3 +36,27 @@ async def is_token_blacklisted(jti: str) -> bool:
     """Check if a token JTI is blacklisted."""
     r = await get_redis()
     return await r.exists(f"{BLACKLIST_PREFIX}{jti}") > 0
+
+
+# ==================== OAuth Auth Code ====================
+
+AUTH_CODE_PREFIX = "auth_code:"
+
+
+async def store_auth_code(code: str, payload: dict, ttl: int):
+    """Store a one-time auth code → JSON payload with auto-expiry."""
+    import json
+
+    r = await get_redis()
+    await r.setex(f"{AUTH_CODE_PREFIX}{code}", ttl, json.dumps(payload))
+
+
+async def consume_auth_code(code: str) -> dict | None:
+    """Atomically read and delete an auth code. Returns payload or None."""
+    import json
+
+    r = await get_redis()
+    raw = await r.getdel(f"{AUTH_CODE_PREFIX}{code}")
+    if raw is None:
+        return None
+    return json.loads(raw)

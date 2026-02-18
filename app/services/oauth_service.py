@@ -1,3 +1,5 @@
+import base64
+import json
 from urllib.parse import urlencode
 
 import httpx
@@ -7,6 +9,20 @@ from app.config import get_settings
 settings = get_settings()
 
 
+# ==================== State Encoding ====================
+
+
+def encode_state(client_id: str, redirect_uri: str) -> str:
+    """Encode client_id + redirect_uri into a base64 OAuth state parameter."""
+    payload = {"client_id": client_id, "redirect_uri": redirect_uri}
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+
+
+def decode_state(state: str) -> dict:
+    """Decode the OAuth state parameter. Returns {"client_id": ..., "redirect_uri": ...}."""
+    return json.loads(base64.urlsafe_b64decode(state.encode()))
+
+
 # ==================== Google OAuth ====================
 
 
@@ -14,14 +30,14 @@ def get_google_auth_url(client_id: str | None = None, redirect_uri: str | None =
     """Generate Google OAuth authorization URL."""
     params = {
         "client_id": settings.google_client_id,
-        "redirect_uri": redirect_uri or f"{settings.auth_base_url}/auth/oauth/google/callback",
+        "redirect_uri": f"{settings.auth_base_url}/auth/oauth/google/callback",
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "consent",
     }
-    if client_id:
-        params["state"] = client_id  # pass app client_id through state
+    if client_id and redirect_uri:
+        params["state"] = encode_state(client_id, redirect_uri)
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
 
 
@@ -65,11 +81,11 @@ def get_github_auth_url(client_id: str | None = None, redirect_uri: str | None =
     """Generate GitHub OAuth authorization URL."""
     params = {
         "client_id": settings.github_client_id,
-        "redirect_uri": redirect_uri or f"{settings.auth_base_url}/auth/oauth/github/callback",
+        "redirect_uri": f"{settings.auth_base_url}/auth/oauth/github/callback",
         "scope": "read:user user:email",
     }
-    if client_id:
-        params["state"] = client_id
+    if client_id and redirect_uri:
+        params["state"] = encode_state(client_id, redirect_uri)
     return f"https://github.com/login/oauth/authorize?{urlencode(params)}"
 
 

@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     github_client_id: str = ""
     github_client_secret: str = ""
 
+    # Auth code (OAuth authorization code flow)
+    auth_code_expire_seconds: int = 300  # 5-minute one-time code
+
     # Auth service base URL
     auth_base_url: str = "http://localhost:8100"
 

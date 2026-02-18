@@ -1,0 +1,14 @@
+services:
+  auth:
+    build: .
+    container_name: auth-service
+    ports:
+      - "8100:8100"
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./keys:/app/keys
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+    restart: unless-stopped

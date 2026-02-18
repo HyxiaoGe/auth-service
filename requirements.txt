@@ -1,0 +1,27 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Database
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.0
+
+# Redis
+redis[hiredis]==5.2.1
+
+# JWT & Security
+PyJWT[crypto]==2.10.1
+cryptography==44.0.0
+pwdlib[argon2]==0.2.1
+
+# OAuth HTTP client
+httpx==0.28.1
+
+# Validation & Settings
+pydantic[email]==2.10.3
+pydantic-settings==2.7.0
+
+# Utilities
+python-multipart==0.0.20

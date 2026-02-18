@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auth-client"
+version = "0.1.0"
+description = "Lightweight JWT validator for services using Auth Service"
+requires-python = ">=3.10"
+dependencies = [
+    "PyJWT[crypto]>=2.8.0",
+    "httpx>=0.25.0",
+    "cryptography>=41.0.0",
+]
+
+[project.optional-dependencies]
+fastapi = [
+    "fastapi>=0.100.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["auth*"]

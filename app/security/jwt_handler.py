@@ -46,7 +46,7 @@ def create_access_token(
     if scopes:
         payload["scopes"] = scopes
 
-    return jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm)
+    return jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm, headers={"kid": "auth-key-1"})
 
 
 def create_refresh_token(user_id: str, app_client_id: str | None = None) -> tuple[str, str, datetime]:
@@ -68,7 +68,7 @@ def create_refresh_token(user_id: str, app_client_id: str | None = None) -> tupl
     if app_client_id:
         payload["aud"] = app_client_id
 
-    token = jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm)
+    token = jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm, headers={"kid": "auth-key-1"})
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     return token, token_hash, expires_at
 
@@ -121,7 +121,7 @@ def get_jwks() -> dict:
                 "kty": "RSA",
                 "use": "sig",
                 "alg": "RS256",
-                "kid": "sean-auth-key-1",
+                "kid": "auth-key-1",
                 "n": n,
                 "e": e,
             }

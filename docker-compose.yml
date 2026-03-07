@@ -12,3 +12,9 @@ services:
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini
     restart: unless-stopped
+    networks:
+      - nano-banana-network
+
+networks:
+  nano-banana-network:
+    external: true

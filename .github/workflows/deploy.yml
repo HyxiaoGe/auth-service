@@ -15,7 +15,8 @@ jobs:
       - name: Deploy
         run: |
           cd ~/project/auth-service
-          git pull
-          docker compose down
+          git fetch origin
+          git reset --hard origin/main
+          git clean -fd
           docker compose up -d --build
           docker image prune -f

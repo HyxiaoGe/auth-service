@@ -36,10 +36,10 @@ class Settings(BaseSettings):
     auth_code_expire_seconds: int = 300  # 5-minute one-time code
 
     # Auth service base URL
-    auth_base_url: str = "http://localhost:8100"
+    auth_base_url: str = "http://192.168.1.10:8100"
 
     # CORS
-    cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://192.168.1.10:3004"
 
     @property
     def cors_origin_list(self) -> list[str]:

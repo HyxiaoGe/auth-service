@@ -45,19 +45,35 @@ class OAuthTokenExchangeRequest(BaseModel):
 
 # ==================== User ====================
 
+class UserPreferencesResponse(BaseModel):
+    locale: str = "zh"
+    timezone: str = "Asia/Shanghai"
+    theme: str = "system"
+
+
 class UserInfo(BaseModel):
     id: uuid.UUID
     email: str
     name: str | None
     avatar_url: str | None
+    is_superuser: bool = False
     is_active: bool
     created_at: datetime
+    preferences: UserPreferencesResponse = UserPreferencesResponse()
 
     model_config = {"from_attributes": True}
 
 
 class UserInfoWithProviders(UserInfo):
     providers: list[str] = []  # ["google", "github"]
+
+
+class ProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    avatar_url: str | None = None
+    locale: str | None = None
+    timezone: str | None = None
+    theme: str | None = None
 
 
 # ==================== Application ====================

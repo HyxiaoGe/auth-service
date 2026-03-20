@@ -10,6 +10,7 @@ Centralized authentication microservice (FastAPI + Python 3.12) that issues RS25
 
 ```bash
 # Start all services (auth + postgres + redis)
+# Requires external Docker network: docker network create nano-banana-network
 docker compose up -d
 
 # Apply database migrations
@@ -59,11 +60,16 @@ The `keys/` directory is gitignored and must be generated locally.
 ### Social Login (OAuth)
 - Google and GitHub supported
 - Flow: check `SocialAccount` link → fall back to email lookup → create user if needed → link provider → issue tokens
-- App `client_id` is passed through OAuth `state` parameter to scope tokens to the correct downstream app
+- App `client_id` + `redirect_uri` are encoded in the OAuth `state` parameter (base64 JSON)
+- OAuth callbacks do NOT return tokens directly — they generate a short-lived auth code stored in Redis, redirect to the frontend, and the frontend exchanges the code via `POST /auth/oauth/token`
+- `redirect_uri` is validated against the app's registered `redirect_uris`
 
 ### Redis
-- Used for JWT blacklisting (JTI-based with TTL via `SETEX`)
+- Used for JWT blacklisting (JTI-based with TTL via `SETEX`) and short-lived OAuth auth codes (5-min TTL)
 - Initialized lazily, closed on shutdown via FastAPI `lifespan`
+
+### Password Hashing
+- Argon2 via `pwdlib` (not bcrypt) — see `app/security/password.py`
 
 ### Async Throughout
 All database operations (SQLAlchemy `AsyncSession`), Redis access, and OAuth HTTP calls (`httpx.AsyncClient`) are fully async.
@@ -75,6 +81,18 @@ All config via environment variables loaded by `pydantic-settings` from `.env` (
 ## Client SDK (`auth-client/`)
 
 Pip-installable package for downstream FastAPI services. Provides `JWTValidator` (sync + async JWKS-cached verification) and FastAPI dependencies (`require_auth()`, `require_scopes()`).
+
+## API Route Prefixes
+
+- `/auth/*` — Registration, login, token refresh/revoke, userinfo, profile update
+- `/auth/oauth/*` — Google/GitHub OAuth flows and token exchange
+- `/admin/*` — App management and login logs (requires `admin` scope)
+- `/.well-known/jwks.json` — Public JWKS endpoint (no auth)
+- `/health` — Health check
+
+## Deployment
+
+CI/CD via GitHub Actions (`.github/workflows/deploy.yml`): push to `main` triggers deploy on a self-hosted runner at `~/project/auth-service`. The workflow does `git reset --hard origin/main` → `docker compose up -d --build` → prune images.
 
 ## No Tests or Linting
 

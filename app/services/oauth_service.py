@@ -1,136 +1,115 @@
-import base64
 import json
-from urllib.parse import urlencode
+import secrets
 
-import httpx
+from app.services.oauth_clients import create_google_client, create_github_client
+from app.utils.redis import get_redis
 
-from app.config import get_settings
-
-settings = get_settings()
-
-
-# ==================== State Encoding ====================
+OAUTH_STATE_PREFIX = "oauth_state:"
+OAUTH_STATE_TTL = 300  # 5 minutes
 
 
-def encode_state(client_id: str, redirect_uri: str) -> str:
-    """Encode client_id + redirect_uri into a base64 OAuth state parameter."""
-    payload = {"client_id": client_id, "redirect_uri": redirect_uri}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
+# ==================== State CSRF ====================
 
 
-def decode_state(state: str) -> dict:
-    """Decode the OAuth state parameter. Returns {"client_id": ..., "redirect_uri": ...}."""
-    return json.loads(base64.urlsafe_b64decode(state.encode()))
+async def create_oauth_state(client_id: str, redirect_uri: str) -> str:
+    """Generate a random state, store business data in Redis, return unpredictable state value."""
+    state = secrets.token_urlsafe(32)
+    r = await get_redis()
+    await r.setex(
+        f"{OAUTH_STATE_PREFIX}{state}",
+        OAUTH_STATE_TTL,
+        json.dumps({"client_id": client_id, "redirect_uri": redirect_uri}),
+    )
+    return state
 
 
-# ==================== Google OAuth ====================
+async def verify_and_consume_state(state: str) -> dict:
+    """Atomically read and delete state from Redis. Raises ValueError if invalid/expired."""
+    r = await get_redis()
+    raw = await r.getdel(f"{OAUTH_STATE_PREFIX}{state}")
+    if raw is None:
+        raise ValueError("Invalid or expired OAuth state")
+    return json.loads(raw)
 
 
-def get_google_auth_url(client_id: str | None = None, redirect_uri: str | None = None) -> str:
+# ==================== Google ====================
+
+
+def get_google_auth_url(state: str) -> str:
     """Generate Google OAuth authorization URL."""
-    params = {
-        "client_id": settings.google_client_id,
-        "redirect_uri": f"{settings.auth_base_url}/auth/oauth/google/callback",
-        "response_type": "code",
-        "scope": "openid email profile",
-        "access_type": "offline",
-        "prompt": "consent",
-    }
-    if client_id and redirect_uri:
-        params["state"] = encode_state(client_id, redirect_uri)
-    return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    client = create_google_client()
+    uri, _ = client.create_authorization_url(
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        state=state,
+        scope="openid email profile",
+        access_type="offline",
+        prompt="consent",
+    )
+    return uri
 
 
-async def exchange_google_code(code: str, redirect_uri: str | None = None) -> dict:
-    """Exchange Google authorization code for tokens and user info."""
-    async with httpx.AsyncClient() as client:
-        # Exchange code for tokens
-        token_resp = await client.post(
+async def exchange_google_code(code: str) -> dict:
+    """Exchange Google authorization code for user info."""
+    async with create_google_client() as client:
+        await client.fetch_token(
             "https://oauth2.googleapis.com/token",
-            data={
-                "code": code,
-                "client_id": settings.google_client_id,
-                "client_secret": settings.google_client_secret,
-                "redirect_uri": redirect_uri or f"{settings.auth_base_url}/auth/oauth/google/callback",
-                "grant_type": "authorization_code",
-            },
+            code=code,
+            redirect_uri=client.redirect_uri,
         )
-        token_resp.raise_for_status()
-        tokens = token_resp.json()
-
-        # Get user info
-        userinfo_resp = await client.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {tokens['access_token']}"},
-        )
-        userinfo_resp.raise_for_status()
-        userinfo = userinfo_resp.json()
-
-    return {
-        "provider_id": userinfo["id"],
-        "email": userinfo["email"],
-        "name": userinfo.get("name"),
-        "avatar_url": userinfo.get("picture"),
-    }
+        resp = await client.get("https://www.googleapis.com/oauth2/v2/userinfo")
+        resp.raise_for_status()
+        userinfo = resp.json()
+        return {
+            "provider_id": userinfo["id"],
+            "email": userinfo["email"],
+            "name": userinfo.get("name"),
+            "avatar_url": userinfo.get("picture"),
+        }
 
 
-# ==================== GitHub OAuth ====================
+# ==================== GitHub ====================
 
 
-def get_github_auth_url(client_id: str | None = None, redirect_uri: str | None = None) -> str:
+def get_github_auth_url(state: str) -> str:
     """Generate GitHub OAuth authorization URL."""
-    params = {
-        "client_id": settings.github_client_id,
-        "redirect_uri": f"{settings.auth_base_url}/auth/oauth/github/callback",
-        "scope": "read:user user:email",
-    }
-    if client_id and redirect_uri:
-        params["state"] = encode_state(client_id, redirect_uri)
-    return f"https://github.com/login/oauth/authorize?{urlencode(params)}"
+    client = create_github_client()
+    uri, _ = client.create_authorization_url(
+        "https://github.com/login/oauth/authorize",
+        state=state,
+        scope="read:user user:email",
+    )
+    return uri
 
 
-async def exchange_github_code(code: str, redirect_uri: str | None = None) -> dict:
-    """Exchange GitHub authorization code for tokens and user info."""
-    async with httpx.AsyncClient() as client:
-        # Exchange code for token
-        token_resp = await client.post(
+async def exchange_github_code(code: str) -> dict:
+    """Exchange GitHub authorization code for user info."""
+    async with create_github_client() as client:
+        await client.fetch_token(
             "https://github.com/login/oauth/access_token",
-            json={
-                "client_id": settings.github_client_id,
-                "client_secret": settings.github_client_secret,
-                "code": code,
-                "redirect_uri": redirect_uri or f"{settings.auth_base_url}/auth/oauth/github/callback",
-            },
+            code=code,
             headers={"Accept": "application/json"},
         )
-        token_resp.raise_for_status()
-        tokens = token_resp.json()
-
-        access_token = tokens["access_token"]
-
-        # Get user info
-        user_resp = await client.get(
+        resp = await client.get(
             "https://api.github.com/user",
-            headers={"Authorization": f"Bearer {access_token}"},
+            headers={"Accept": "application/json"},
         )
-        user_resp.raise_for_status()
-        user = user_resp.json()
+        resp.raise_for_status()
+        user = resp.json()
 
-        # Get primary email (may not be public)
         email = user.get("email")
         if not email:
             email_resp = await client.get(
                 "https://api.github.com/user/emails",
-                headers={"Authorization": f"Bearer {access_token}"},
+                headers={"Accept": "application/json"},
             )
             email_resp.raise_for_status()
             emails = email_resp.json()
             primary = next((e for e in emails if e.get("primary")), emails[0] if emails else None)
             email = primary["email"] if primary else None
 
-    return {
-        "provider_id": str(user["id"]),
-        "email": email,
-        "name": user.get("name") or user.get("login"),
-        "avatar_url": user.get("avatar_url"),
-    }
+        return {
+            "provider_id": str(user["id"]),
+            "email": email,
+            "name": user.get("name") or user.get("login"),
+            "avatar_url": user.get("avatar_url"),
+        }

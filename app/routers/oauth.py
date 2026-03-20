@@ -25,7 +25,8 @@ async def google_login(
     redirect_uri: str = Query(..., description="Frontend callback URL"),
 ):
     """Redirect user to Google OAuth consent screen."""
-    url = oauth_service.get_google_auth_url(client_id=client_id, redirect_uri=redirect_uri)
+    state = await oauth_service.create_oauth_state(client_id, redirect_uri)
+    url = oauth_service.get_google_auth_url(state)
     return RedirectResponse(url=url)
 
 
@@ -40,9 +41,9 @@ async def google_callback(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing state parameter")
 
     try:
-        state_data = oauth_service.decode_state(state)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state parameter")
+        state_data = await oauth_service.verify_and_consume_state(state)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter")
 
     client_id = state_data.get("client_id")
     redirect_uri = state_data.get("redirect_uri")
@@ -82,7 +83,8 @@ async def github_login(
     redirect_uri: str = Query(..., description="Frontend callback URL"),
 ):
     """Redirect user to GitHub OAuth consent screen."""
-    url = oauth_service.get_github_auth_url(client_id=client_id, redirect_uri=redirect_uri)
+    state = await oauth_service.create_oauth_state(client_id, redirect_uri)
+    url = oauth_service.get_github_auth_url(state)
     return RedirectResponse(url=url)
 
 
@@ -97,9 +99,9 @@ async def github_callback(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing state parameter")
 
     try:
-        state_data = oauth_service.decode_state(state)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid state parameter")
+        state_data = await oauth_service.verify_and_consume_state(state)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter")
 
     client_id = state_data.get("client_id")
     redirect_uri = state_data.get("redirect_uri")

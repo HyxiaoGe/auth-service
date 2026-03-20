@@ -16,8 +16,9 @@ PyJWT[crypto]==2.10.1
 cryptography==44.0.0
 pwdlib[argon2]==0.2.1
 
-# OAuth HTTP client
+# OAuth
 httpx==0.28.1
+authlib>=1.3.0
 
 # Validation & Settings
 pydantic[email]==2.10.3

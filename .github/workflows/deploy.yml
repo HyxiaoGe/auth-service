@@ -18,5 +18,10 @@ jobs:
           git fetch origin
           git reset --hard origin/main
           git clean -fd
-          docker compose up -d --build
+          if git diff HEAD~1 --name-only | grep -qE 'requirements\.txt|Dockerfile|docker-compose'; then
+            docker compose up -d --build
+          else
+            docker compose restart
+          fi
           docker image prune -f
+          docker builder prune --filter "until=72h" -f

@@ -12,6 +12,7 @@ services:
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini
     restart: unless-stopped
+    mem_limit: 256m
     networks:
       - nano-banana-network
 

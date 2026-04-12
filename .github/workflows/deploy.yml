@@ -6,7 +6,20 @@ on:
   workflow_dispatch:
 
 jobs:
+  check:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Architecture check
+        run: python3 scripts/check_architecture.py
+
+      - name: Lint
+        run: pip install ruff -q && ruff check .
+
   deploy:
+    needs: check
     runs-on: self-hosted
     steps:
       - name: Checkout code

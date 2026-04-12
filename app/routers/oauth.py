@@ -42,8 +42,10 @@ async def google_callback(
 
     try:
         state_data = await oauth_service.verify_and_consume_state(state)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter")
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter"
+        ) from err
 
     client_id = state_data.get("client_id")
     redirect_uri = state_data.get("redirect_uri")
@@ -56,7 +58,7 @@ async def google_callback(
     try:
         user_info = await oauth_service.exchange_google_code(code)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Google OAuth failed: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Google OAuth failed: {e}") from e
 
     if not user_info.get("email"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get email from Google")
@@ -100,8 +102,10 @@ async def github_callback(
 
     try:
         state_data = await oauth_service.verify_and_consume_state(state)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter")
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter"
+        ) from err
 
     client_id = state_data.get("client_id")
     redirect_uri = state_data.get("redirect_uri")
@@ -114,7 +118,7 @@ async def github_callback(
     try:
         user_info = await oauth_service.exchange_github_code(code)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"GitHub OAuth failed: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"GitHub OAuth failed: {e}") from e
 
     if not user_info.get("email"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get email from GitHub")
@@ -174,13 +178,15 @@ async def exchange_code_for_tokens(
 async def _validate_redirect_uri(client_id: str, redirect_uri: str, db: AsyncSession):
     """Verify the redirect_uri is registered for the given application."""
     result = await db.execute(
-        select(Application).where(Application.client_id == client_id, Application.is_active == True)
+        select(Application).where(Application.client_id == client_id, Application.is_active.is_(True))
     )
     app = result.scalar_one_or_none()
     if not app:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unknown client_id")
     if redirect_uri not in app.redirect_uris:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="redirect_uri not registered for this application")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="redirect_uri not registered for this application"
+        )
 
 
 async def _create_auth_code(user: User, client_id: str, redirect_uri: str, provider: str) -> str:

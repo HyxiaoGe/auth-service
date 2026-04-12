@@ -36,7 +36,7 @@ def require_auth(validator: JWTValidator):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid token: {e}",
                 headers={"WWW-Authenticate": "Bearer"},
-            )
+            ) from e
 
     return _dependency
 

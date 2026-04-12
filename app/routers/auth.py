@@ -28,7 +28,7 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new user with email and password."""
-    user = await auth_service.register_user(payload, db)
+    await auth_service.register_user(payload, db)
     # Auto-login after registration
     login_payload = LoginRequest(email=payload.email, password=payload.password)
     return await auth_service.login_user(login_payload, request, db)
@@ -81,9 +81,7 @@ async def get_userinfo(
     """Get current user info from the access token."""
     from sqlalchemy.orm import selectinload
 
-    result = await db.execute(
-        select(User).options(selectinload(User.preferences)).where(User.id == user.sub)
-    )
+    result = await db.execute(select(User).options(selectinload(User.preferences)).where(User.id == user.sub))
     db_user = result.scalar_one_or_none()
     if not db_user:
         from fastapi import HTTPException, status
@@ -111,9 +109,7 @@ async def update_profile(
     """Update current user's profile and preferences."""
     from sqlalchemy.orm import selectinload
 
-    result = await db.execute(
-        select(User).options(selectinload(User.preferences)).where(User.id == user.sub)
-    )
+    result = await db.execute(select(User).options(selectinload(User.preferences)).where(User.id == user.sub))
     db_user = result.scalar_one_or_none()
     if not db_user:
         from fastapi import HTTPException, status
@@ -127,9 +123,7 @@ async def update_profile(
         db_user.avatar_url = payload.avatar_url
 
     # Update preferences
-    has_pref_update = any(
-        v is not None for v in [payload.locale, payload.timezone, payload.theme]
-    )
+    has_pref_update = any(v is not None for v in [payload.locale, payload.timezone, payload.theme])
     if has_pref_update:
         pref = db_user.preferences
         if pref is None:
@@ -146,9 +140,7 @@ async def update_profile(
     await db.commit()
     await db.refresh(db_user)
     # Re-load preferences after commit
-    result = await db.execute(
-        select(User).options(selectinload(User.preferences)).where(User.id == db_user.id)
-    )
+    result = await db.execute(select(User).options(selectinload(User.preferences)).where(User.id == db_user.id))
     db_user = result.scalar_one_or_none()
 
     return UserInfo(

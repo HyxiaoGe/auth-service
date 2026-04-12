@@ -9,8 +9,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from sqlalchemy import select
+
 from app.config import get_settings
-from app.database import async_session, engine, Base
+from app.database import Base, async_session, engine
 from app.models import Application, User
 from app.security.password import hash_password
 
@@ -57,10 +58,10 @@ async def init():
                 redirect_uris=["http://localhost:3000/callback"],
             )
             db.add(app)
-            print(f"✅ Sample app 'MovieMate' registered:")
+            print("✅ Sample app 'MovieMate' registered:")
             print(f"   client_id:     {client_id}")
             print(f"   client_secret: {client_secret}")
-            print(f"   ⚠️  Save the client_secret now — it won't be shown again!")
+            print("   ⚠️  Save the client_secret now — it won't be shown again!")
         else:
             print(f"ℹ️  App 'MovieMate' already exists (client_id: {app.client_id})")
 

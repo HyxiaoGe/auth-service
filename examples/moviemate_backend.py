@@ -5,8 +5,8 @@ This shows how minimal the integration is for a business service.
 Only 3 lines of auth-related code needed!
 """
 
-from fastapi import FastAPI, Depends
-from auth import JWTValidator, require_auth, require_scopes, AuthenticatedUser
+from auth import AuthenticatedUser, JWTValidator, require_auth, require_scopes
+from fastapi import Depends, FastAPI
 
 # ============================================================
 # 1. Initialize the validator (point to your Auth Service)

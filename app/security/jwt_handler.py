@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import jwt
@@ -31,7 +31,7 @@ def create_access_token(
     scopes: list[str] | None = None,
 ) -> str:
     """Create a short-lived access token."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": user_id,
         "email": email,
@@ -54,7 +54,7 @@ def create_refresh_token(user_id: str, app_client_id: str | None = None) -> tupl
     Create a long-lived refresh token.
     Returns: (token_string, token_hash, expires_at)
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     expires_at = now + timedelta(days=settings.refresh_token_expire_days)
 
     payload = {

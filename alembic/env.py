@@ -1,17 +1,16 @@
-import asyncio
 import sys
 from logging.config import fileConfig
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from alembic import context
 from app.config import get_settings
 from app.database import Base
-from app.models import *  # noqa: import all models so Alembic can detect them
+from app.models import *  # noqa: F403 - import all models so Alembic can detect them
 
 settings = get_settings()
 config = context.config

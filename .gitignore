@@ -28,3 +28,4 @@ docker-compose.override.yml
 
 # Alembic
 alembic/versions/__pycache__/
+.claude/

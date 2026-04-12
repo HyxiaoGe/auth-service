@@ -1,6 +1,6 @@
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
@@ -129,16 +129,14 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
     """Use a refresh token to get a new access token (with rotation)."""
     # Decode
     try:
-        payload = decode_token(refresh_token_str, verify_type="refresh")
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+        decode_token(refresh_token_str, verify_type="refresh")
+    except Exception as err:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from err
 
     # Check DB
     token_hash = hash_token(refresh_token_str)
     result = await db.execute(
-        select(RefreshToken)
-        .options(selectinload(RefreshToken.user))
-        .where(RefreshToken.token_hash == token_hash)
+        select(RefreshToken).options(selectinload(RefreshToken.user)).where(RefreshToken.token_hash == token_hash)
     )
     stored = result.scalar_one_or_none()
 
@@ -154,7 +152,7 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
 
     # Rotate: revoke old, issue new
     stored.is_revoked = True
-    stored.revoked_at = datetime.now(timezone.utc)
+    stored.revoked_at = datetime.now(UTC)
 
     tokens = await _issue_tokens(user, stored.app_client_id, db)
     return tokens
@@ -168,7 +166,7 @@ async def revoke_refresh_token(refresh_token_str: str, db: AsyncSession):
 
     if stored and not stored.is_revoked:
         stored.is_revoked = True
-        stored.revoked_at = datetime.now(timezone.utc)
+        stored.revoked_at = datetime.now(UTC)
         await db.commit()
 
 
@@ -310,9 +308,9 @@ async def _log_login(
 async def _revoke_all_user_tokens(user_id: uuid.UUID, db: AsyncSession):
     """Revoke all refresh tokens for a user (security measure)."""
     result = await db.execute(
-        select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.is_revoked == False)
+        select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.is_revoked.is_(False))
     )
     for token in result.scalars():
         token.is_revoked = True
-        token.revoked_at = datetime.now(timezone.utc)
+        token.revoked_at = datetime.now(UTC)
     await db.commit()

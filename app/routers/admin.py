@@ -43,7 +43,8 @@ async def get_login_logs(
     """View login audit logs. Filterable by user_id and app_id."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
-    from app.models import LoginLog, User, Application
+
+    from app.models import LoginLog
 
     query = (
         select(LoginLog)

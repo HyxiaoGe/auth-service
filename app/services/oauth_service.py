@@ -1,7 +1,7 @@
 import json
 import secrets
 
-from app.services.oauth_clients import create_google_client, create_github_client
+from app.services.oauth_clients import create_github_client, create_google_client
 from app.utils.redis import get_redis
 
 OAUTH_STATE_PREFIX = "oauth_state:"

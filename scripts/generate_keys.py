@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from app.security.jwt_handler import generate_rsa_keys
 
-
 if __name__ == "__main__":
     generate_rsa_keys()
     print("✅ RSA key pair generated successfully!")

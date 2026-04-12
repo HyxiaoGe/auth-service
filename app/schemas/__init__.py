@@ -3,8 +3,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, EmailStr
 
-
 # ==================== Auth ====================
+
 
 class RegisterRequest(BaseModel):
     email: EmailStr
@@ -45,6 +45,7 @@ class OAuthTokenExchangeRequest(BaseModel):
 
 # ==================== User ====================
 
+
 class UserPreferencesResponse(BaseModel):
     locale: str = "zh"
     timezone: str = "Asia/Shanghai"
@@ -78,6 +79,7 @@ class ProfileUpdateRequest(BaseModel):
 
 # ==================== Application ====================
 
+
 class AppCreateRequest(BaseModel):
     name: str
     description: str | None = None
@@ -102,6 +104,7 @@ class AppCreateResponse(AppResponse):
 
 # ==================== Login Log ====================
 
+
 class LoginLogResponse(BaseModel):
     id: uuid.UUID
     user_email: str | None = None
@@ -115,6 +118,7 @@ class LoginLogResponse(BaseModel):
 
 
 # ==================== Common ====================
+
 
 class MessageResponse(BaseModel):
     message: str

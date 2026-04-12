@@ -16,8 +16,8 @@ Usage:
         return {"user_id": user.sub}
 """
 
-from auth.validator import JWTValidator, AuthenticatedUser
 from auth.dependencies import require_auth, require_scopes
+from auth.validator import AuthenticatedUser, JWTValidator
 
 __all__ = ["JWTValidator", "AuthenticatedUser", "require_auth", "require_scopes"]
 __version__ = "0.1.0"

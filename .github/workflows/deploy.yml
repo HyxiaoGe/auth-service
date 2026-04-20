@@ -25,6 +25,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Record start time
+        run: echo "BUILD_START=$(date +%s)" >> $GITHUB_ENV
+
       - name: Deploy
         run: |
           cd ~/project/auth-service
@@ -38,3 +41,7 @@ jobs:
           fi
           docker image prune -f
           docker builder prune --filter "until=72h" -f
+
+      - name: Push deploy metrics
+        if: always()
+        run: bash ~/scripts/push-deploy-metrics.sh auth-service main ${{ job.status }} ${{ env.BUILD_START }}

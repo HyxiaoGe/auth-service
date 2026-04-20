@@ -16,7 +16,7 @@ jobs:
         run: python3 scripts/check_architecture.py
 
       - name: Lint
-        run: pip install ruff -q && ruff check .
+        run: ~/.local/bin/ruff check .
 
   deploy:
     needs: check

@@ -167,6 +167,8 @@ async def exchange_code_for_tokens(
             detail="client_id mismatch",
         )
 
+    _enforce_pkce(code_data, payload.code_verifier)
+
     # Look up user
     result = await db.execute(select(User).where(User.id == code_data["user_id"]))
     user = result.scalar_one_or_none()
@@ -181,6 +183,24 @@ async def exchange_code_for_tokens(
 
 
 # ==================== Helpers ====================
+
+
+def _enforce_pkce(code_data: dict, code_verifier: str | None) -> None:
+    """Conditional PKCE gate (RFC 7636, S256).
+
+    Enforce a code_verifier ONLY when the auth code was minted with a code_challenge --
+    that is, when it came through /authorize. Codes from the legacy direct
+    /oauth/{provider} flow carry no challenge and pass through untouched, so existing
+    apps keep working without a verifier (zero-breakage).
+    """
+    challenge = code_data.get("code_challenge")
+    if not challenge:
+        return
+    if not code_verifier or not oauth_service.verify_pkce(code_verifier, challenge):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_grant: PKCE verification failed",
+        )
 
 
 async def _validate_redirect_uri(client_id: str, redirect_uri: str, db: AsyncSession):

@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import json
 import secrets
 
@@ -6,6 +9,23 @@ from app.utils.redis import get_redis
 
 OAUTH_STATE_PREFIX = "oauth_state:"
 OAUTH_STATE_TTL = 300  # 5 minutes
+
+
+# ==================== PKCE (RFC 7636) ====================
+
+
+def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
+    """Return True iff BASE64URL(SHA256(code_verifier)) == code_challenge (S256 only).
+
+    Public clients can't keep a client_secret, so this is what stops an intercepted
+    auth code from being redeemed by anyone but the original requester. We only ever
+    accept S256 (never ``plain``). The comparison is constant-time.
+    """
+    if not code_verifier or not code_challenge:
+        return False
+    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+    expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return hmac.compare_digest(expected, code_challenge)
 
 
 # ==================== State CSRF ====================
@@ -35,15 +55,22 @@ async def verify_and_consume_state(state: str) -> dict:
 # ==================== Google ====================
 
 
-def get_google_auth_url(state: str) -> str:
-    """Generate Google OAuth authorization URL."""
+def get_google_auth_url(state: str, prompt: str | None = None) -> str:
+    """Generate Google OAuth authorization URL.
+
+    ``prompt`` is driven by the caller (``/authorize``): the default sends no prompt so
+    Google can silently reuse its own session (enabling SSO), while ``login`` /
+    ``select_account`` force re-authentication. We no longer pin ``prompt=consent`` (it
+    defeated SSO) nor request ``access_type=offline`` (we mint our own refresh tokens and
+    never use Google's).
+    """
     client = create_google_client()
+    extra = {"prompt": prompt} if prompt else {}
     uri, _ = client.create_authorization_url(
         "https://accounts.google.com/o/oauth2/v2/auth",
         state=state,
         scope="openid email profile",
-        access_type="offline",
-        prompt="consent",
+        **extra,
     )
     return uri
 

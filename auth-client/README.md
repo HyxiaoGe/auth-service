@@ -9,7 +9,7 @@
 pip install -e /path/to/auth-service/auth-client[fastapi]
 
 # 或者从 git 安装
-pip install "auth-client[fastapi] @ git+https://github.com/sean/auth-service.git#subdirectory=auth-client"
+pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@main#subdirectory=auth-client"
 ```
 
 ## 快速上手
@@ -62,8 +62,13 @@ def verify_request(authorization_header: str):
 ```python
 validator = JWTValidator(
     jwks_url="http://localhost:8100/.well-known/jwks.json",
-    issuer="http://localhost:8100",     # 可选: 验证 token 签发者
-    audience="app_your_client_id",      # 可选: 验证 token 目标应用
+    issuer="http://localhost:8100",     # 可选: 验证 token 签发者 (iss)
+    audience="app_your_client_id",      # 可选: 验证 token 目标应用 (aud = 你的 client_id)
+    require_token_type="access",        # 可选: 拒绝 refresh token 走保护路由
     cache_ttl=300,                      # JWKS 缓存时间 (秒)
 )
 ```
+
+> 生产接入建议三项 (`issuer` / `audience` / `require_token_type`) 全开 ——
+> IdP 不校验 `aud`，由消费方自己锁定 token 是发给本应用的。详见
+> [docs/AUTH_CONTRACT.md](../docs/AUTH_CONTRACT.md)。

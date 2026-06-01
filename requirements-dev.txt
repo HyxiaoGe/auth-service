@@ -1,0 +1,7 @@
+# Test/dev-only deps (NOT installed into the runtime Docker image).
+# Install locally with: pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+pytest==8.3.4
+pytest-asyncio==0.25.2
+fakeredis==2.26.2

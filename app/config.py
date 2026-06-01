@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     # Auth code (OAuth authorization code flow)
     auth_code_expire_seconds: int = 300  # 5-minute one-time code
 
+    # SSO IdP session (Redis-backed session + cookie) for cross-app single sign-on
+    session_cookie_samesite: str = "lax"
+    session_cookie_domain: str | None = None  # None => host-only cookie (required by __Host- prefix)
+    session_ttl_seconds: int = 604800  # 7-day sliding window
+    session_absolute_max_seconds: int = 2592000  # 30-day hard cap regardless of activity
+
     # Auth service base URL
     auth_base_url: str = "http://192.168.1.10:8100"
 
@@ -45,6 +51,21 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
+
+    @property
+    def session_cookie_name(self) -> str:
+        # __Host- prefix mandates Secure + Path=/ + no Domain; only valid over HTTPS (prod).
+        # Dev runs over http://localhost where Secure (and thus __Host-) is impossible.
+        return "__Host-sso_session" if self.is_production else "sso_session"
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        # Derived (not a settable field) so production can never be misconfigured insecure.
+        return self.is_production
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

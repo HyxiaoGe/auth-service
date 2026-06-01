@@ -9,7 +9,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import Application, User
 from app.schemas import OAuthTokenExchangeRequest, TokenResponse
-from app.services import auth_service, oauth_service
+from app.services import auth_service, oauth_service, session_service
 from app.utils.redis import consume_auth_code, store_auth_code
 
 settings = get_settings()
@@ -73,7 +73,11 @@ async def google_callback(
     )
 
     auth_code = await _create_auth_code(user, client_id, redirect_uri, provider="google")
-    return RedirectResponse(url=f"{redirect_uri}?code={auth_code}", status_code=302)
+    response = RedirectResponse(url=f"{redirect_uri}?code={auth_code}", status_code=302)
+    # Establish the IdP session (cookie + Redis) so other apps can SSO silently later (P1).
+    # Cookie must be set on the inline response object here, not via Depends.
+    await session_service.start_session(response, str(user.id), ["google"])
+    return response
 
 
 # ==================== GitHub ====================
@@ -133,7 +137,11 @@ async def github_callback(
     )
 
     auth_code = await _create_auth_code(user, client_id, redirect_uri, provider="github")
-    return RedirectResponse(url=f"{redirect_uri}?code={auth_code}", status_code=302)
+    response = RedirectResponse(url=f"{redirect_uri}?code={auth_code}", status_code=302)
+    # Establish the IdP session (cookie + Redis) so other apps can SSO silently later (P1).
+    # Cookie must be set on the inline response object here, not via Depends.
+    await session_service.start_session(response, str(user.id), ["github"])
+    return response
 
 
 # ==================== Token Exchange ====================

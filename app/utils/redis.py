@@ -60,3 +60,39 @@ async def consume_auth_code(code: str) -> dict | None:
     if raw is None:
         return None
     return json.loads(raw)
+
+
+# ==================== SSO IdP Session ====================
+
+SESSION_PREFIX = "sso_session:"
+
+
+async def create_session(sid: str, payload: dict, ttl: int):
+    """Store an IdP session → JSON payload with a sliding TTL."""
+    import json
+
+    r = await get_redis()
+    await r.setex(f"{SESSION_PREFIX}{sid}", ttl, json.dumps(payload))
+
+
+async def get_session(sid: str) -> dict | None:
+    """Read a session payload without consuming it. Returns None if absent/expired."""
+    import json
+
+    r = await get_redis()
+    raw = await r.get(f"{SESSION_PREFIX}{sid}")
+    if raw is None:
+        return None
+    return json.loads(raw)
+
+
+async def touch_session(sid: str, ttl: int):
+    """Slide the session's TTL forward without reading the payload."""
+    r = await get_redis()
+    await r.expire(f"{SESSION_PREFIX}{sid}", ttl)
+
+
+async def delete_session(sid: str):
+    """Delete a session (logout / absolute-lifetime expiry)."""
+    r = await get_redis()
+    await r.delete(f"{SESSION_PREFIX}{sid}")

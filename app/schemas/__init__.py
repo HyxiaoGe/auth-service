@@ -48,6 +48,9 @@ class OAuthCallbackParams(BaseModel):
 class OAuthTokenExchangeRequest(BaseModel):
     code: str
     client_id: str
+    # PKCE (RFC 7636): required only when the auth code was minted with a code_challenge
+    # (i.e. came through /authorize). Legacy direct-flow codes omit it.
+    code_verifier: str | None = None
 
 
 # ==================== User ====================

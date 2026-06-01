@@ -1,7 +1,8 @@
 import uuid
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +21,35 @@ from app.schemas import (
     UserPreferencesResponse,
 )
 from app.security.deps import CurrentUser, get_current_user
-from app.services import auth_service, session_service
+from app.services import auth_service, oauth_service, session_service
 from app.utils.redis import delete_session, get_session
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+
+def oauth_error(
+    error: str,
+    error_description: str,
+    redirect_uri: str | None = None,
+    state: str | None = None,
+):
+    """Unified OAuth/OIDC error response.
+
+    Before redirect_uri is validated (bad client_id/redirect_uri/response_type) we must
+    NOT redirect anywhere -- return a 400 JSON ``{error, error_description}``. After the
+    redirect_uri is known-good, errors go back to the app as
+    ``302 {redirect_uri}?error=&error_description=&state=`` so the SDK can react. ``state``
+    is echoed only when present.
+    """
+    if redirect_uri is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": error, "error_description": error_description},
+        )
+    params = {"error": error, "error_description": error_description}
+    if state is not None:
+        params["state"] = state
+    return RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
 
 
 @router.post("/register", response_model=TokenResponse, status_code=201)
@@ -107,6 +133,104 @@ async def _is_registered_redirect(uri: str, db: AsyncSession) -> bool:
     """True if uri is a registered redirect_uri of some active app (open-redirect guard)."""
     result = await db.execute(select(Application).where(Application.is_active.is_(True)))
     return any(uri in app.redirect_uris for app in result.scalars())
+
+
+async def _resolve_authorize_app(client_id: str, redirect_uri: str, db: AsyncSession) -> Application | None:
+    """Return the active Application iff redirect_uri is an exact registered match, else None."""
+    result = await db.execute(
+        select(Application).where(Application.client_id == client_id, Application.is_active.is_(True))
+    )
+    app = result.scalar_one_or_none()
+    if app is None or redirect_uri not in app.redirect_uris:
+        return None
+    return app
+
+
+@router.get("/authorize")
+async def authorize(
+    request: Request,
+    client_id: str,
+    redirect_uri: str,
+    response_type: str = "code",
+    state: str | None = None,
+    code_challenge: str | None = None,
+    code_challenge_method: str | None = None,
+    prompt: str | None = None,
+    provider: str | None = None,
+    nonce: str | None = None,
+    scope: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """SSO front door (OIDC-aligned authorization endpoint).
+
+    A live IdP session yields a silent auth code (no social round-trip = SSO); otherwise
+    the user is sent through interactive login -- unless ``prompt=none``, which fails
+    silently with ``login_required`` so apps can probe for an existing session without UI.
+
+    Validation order matters: response_type and client_id/redirect_uri are checked before
+    anything with side effects, and we NEVER redirect to an unvalidated redirect_uri. PKCE
+    (S256) is mandatory here -- this endpoint is new, so requiring it breaks no existing app.
+    """
+    # 0. response_type — block deprecated implicit/hybrid (OAuth 2.0 BCP)
+    if response_type != "code":
+        return oauth_error("unsupported_response_type", "only response_type=code is supported")
+
+    # 1. client_id + redirect_uri (exact match) — before any side effect / before any redirect
+    app = await _resolve_authorize_app(client_id, redirect_uri, db)
+    if app is None:
+        return oauth_error("invalid_client", "unknown client_id or unregistered redirect_uri")
+
+    # 2. PKCE mandatory (public clients) — redirect_uri is validated, so errors go back to the app
+    if not code_challenge or code_challenge_method != "S256":
+        return oauth_error(
+            "invalid_request", "PKCE required: code_challenge + code_challenge_method=S256", redirect_uri, state
+        )
+
+    # 3. resolve the IdP session (slides TTL, enforces absolute lifetime)
+    _sid, session = await session_service.resolve_session(request)
+
+    # 4. silent SSO — a live session and no forced re-auth
+    if session and prompt not in ("login", "select_account"):
+        amr = session.get("amr") or ["sso"]
+        code = await oauth_service.mint_auth_code(
+            user_id=session["user_id"],
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            provider=amr[0],
+            code_challenge=code_challenge,
+        )
+        params = {"code": code}
+        if state is not None:
+            params["state"] = state
+        return RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+    # 5. interaction required
+    if prompt == "none":
+        return oauth_error("login_required", "no active session", redirect_uri, state)
+
+    if provider not in ("google", "github"):
+        # MVP: the app's SDK renders its own provider buttons, so a no-provider interactive
+        # hit is bounced back for the app to handle (a hosted chooser page is deferred).
+        return oauth_error("invalid_request", "provider is required", redirect_uri, state)
+
+    # carry the full authorize context across the social round-trip (app_state rides along,
+    # never sent upstream); the callback resumes from here and echoes app_state back.
+    oauth_state = await oauth_service.create_oauth_state(
+        client_id,
+        redirect_uri,
+        app_state=state,
+        prompt=prompt,
+        provider=provider,
+        response_type=response_type,
+        code_challenge=code_challenge,
+        code_challenge_method=code_challenge_method,
+        nonce=nonce,
+    )
+    if provider == "google":
+        url = oauth_service.get_google_auth_url(oauth_state, prompt=prompt)
+    else:
+        url = oauth_service.get_github_auth_url(oauth_state)
+    return RedirectResponse(url=url, status_code=302)
 
 
 def _build_preferences(pref: UserPreference | None) -> UserPreferencesResponse:

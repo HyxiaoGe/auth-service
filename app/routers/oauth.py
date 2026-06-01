@@ -1,18 +1,16 @@
-import secrets
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.database import get_db
 from app.models import Application, User
 from app.schemas import OAuthTokenExchangeRequest, TokenResponse
 from app.services import auth_service, oauth_service, session_service
-from app.utils.redis import consume_auth_code, store_auth_code
+from app.utils.redis import consume_auth_code
 
-settings = get_settings()
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
 
 
@@ -72,12 +70,7 @@ async def google_callback(
         db=db,
     )
 
-    auth_code = await _create_auth_code(user, client_id, redirect_uri, provider="google")
-    response = RedirectResponse(url=f"{redirect_uri}?code={auth_code}", status_code=302)
-    # Establish the IdP session (cookie + Redis) so other apps can SSO silently later (P1).
-    # Cookie must be set on the inline response object here, not via Depends.
-    await session_service.start_session(response, str(user.id), ["google"])
-    return response
+    return await _social_redirect(user, state_data, provider="google")
 
 
 # ==================== GitHub ====================
@@ -136,12 +129,7 @@ async def github_callback(
         db=db,
     )
 
-    auth_code = await _create_auth_code(user, client_id, redirect_uri, provider="github")
-    response = RedirectResponse(url=f"{redirect_uri}?code={auth_code}", status_code=302)
-    # Establish the IdP session (cookie + Redis) so other apps can SSO silently later (P1).
-    # Cookie must be set on the inline response object here, not via Depends.
-    await session_service.start_session(response, str(user.id), ["github"])
-    return response
+    return await _social_redirect(user, state_data, provider="github")
 
 
 # ==================== Token Exchange ====================
@@ -217,17 +205,29 @@ async def _validate_redirect_uri(client_id: str, redirect_uri: str, db: AsyncSes
         )
 
 
-async def _create_auth_code(user: User, client_id: str, redirect_uri: str, provider: str) -> str:
-    """Generate a one-time auth code and store it in Redis."""
-    code = secrets.token_urlsafe(32)
-    await store_auth_code(
-        code,
-        {
-            "user_id": str(user.id),
-            "app_client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "provider": provider,
-        },
-        settings.auth_code_expire_seconds,
+async def _social_redirect(user: User, state_data: dict, provider: str) -> RedirectResponse:
+    """Finish a social login: mint the auth code, establish the IdP session, redirect back.
+
+    When the flow originated at /authorize, ``state_data`` carries ``app_state`` (echoed
+    back as ``?state=``) and ``code_challenge`` (bound into the code so /token enforces
+    PKCE). The legacy direct flow carries neither, so this yields a bare ``?code=`` and an
+    unbound code -- exactly the prior behavior (zero-breakage).
+
+    The session cookie must be set on this inline RedirectResponse (not via Depends):
+    ``social_login()`` returns a ``User``, not a ``Response``.
+    """
+    redirect_uri = state_data["redirect_uri"]
+    code = await oauth_service.mint_auth_code(
+        user_id=str(user.id),
+        client_id=state_data["client_id"],
+        redirect_uri=redirect_uri,
+        provider=provider,
+        code_challenge=state_data.get("code_challenge"),
     )
-    return code
+    params = {"code": code}
+    app_state = state_data.get("app_state")
+    if app_state is not None:
+        params["state"] = app_state
+    response = RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
+    await session_service.start_session(response, str(user.id), [provider])
+    return response

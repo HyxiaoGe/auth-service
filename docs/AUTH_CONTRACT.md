@@ -134,13 +134,17 @@ data; treat `name`/`avatar_url` as nullable.
 
 ### `POST /auth/logout` — single logout (end IdP session)
 
-`POST` only (so it cannot be triggered by cross-site GET navigation). Optional body
-`{ "post_logout_redirect_uri": "...", "client_id": "..." }`. Ends the shared IdP session,
+`POST` only (so it cannot be triggered by cross-site GET navigation). `post_logout_redirect_uri`
+and `client_id` may be sent **either** as a JSON body `{ "post_logout_redirect_uri": "...",
+"client_id": "..." }` **or** as urlencoded form fields — the form variant lets a top-level
+`<form method=POST>` carry the `SameSite=Lax` session cookie to this cross-site, POST-only
+endpoint (this is the browser SDK's single-logout path). Ends the shared IdP session,
 revokes all of the user's refresh tokens, clears the session cookie. If
-`post_logout_redirect_uri` is supplied and is a registered redirect uri of some active
-app → `302` there (open-redirect guarded); otherwise `200 {message}`. Already-issued
-access tokens stay valid until expiry. This is the cross-app logout; per-app token revoke
-is `/auth/token/revoke`.
+`post_logout_redirect_uri` is a registered redirect uri → `302` there (open-redirect
+guarded); otherwise `200 {message}`. When `client_id` is supplied the uri must be
+registered **for that app** (tighter); without it, any active app's registered uri matches.
+Already-issued access tokens stay valid until expiry. This is the cross-app logout; per-app
+token revoke is `/auth/token/revoke`.
 
 ### `GET /.well-known/jwks.json` — verification keys
 

@@ -1,5 +1,6 @@
+import json
 import uuid
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -10,7 +11,6 @@ from app.database import get_db
 from app.models import Application, User, UserPreference
 from app.schemas import (
     LoginRequest,
-    LogoutRequest,
     MessageResponse,
     ProfileUpdateRequest,
     RefreshRequest,
@@ -98,15 +98,20 @@ async def revoke_token(
 async def logout(
     request: Request,
     response: Response,
-    payload: LogoutRequest | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Single Logout: destroy the IdP session, revoke all refresh tokens, clear the cookie.
 
     POST-only (never GET) so it cannot be triggered by a cross-site <img>/navigation.
-    Note: already-issued access tokens are stateless 15-min JWTs and remain valid until
-    they expire -- revoking refresh tokens stops *new* access tokens from being minted.
+    ``post_logout_redirect_uri`` and ``client_id`` may be sent as a JSON body OR as
+    urlencoded form fields -- the form variant lets a top-level ``<form method=POST>``
+    deliver them so the SameSite=Lax session cookie rides the navigation to this
+    cross-site, POST-only endpoint. Note: already-issued access tokens are stateless
+    15-min JWTs and remain valid until they expire -- revoking refresh tokens stops *new*
+    access tokens from being minted.
     """
+    post_logout_redirect_uri, client_id = await _read_logout_params(request)
+
     sid = session_service.read_sid(request)
     session = await get_session(sid) if sid else None
     if session:
@@ -116,12 +121,10 @@ async def logout(
     if sid:
         await delete_session(sid)
 
-    if (
-        payload
-        and payload.post_logout_redirect_uri
-        and await _is_registered_redirect(payload.post_logout_redirect_uri, db)
+    if post_logout_redirect_uri and await _is_registered_redirect(
+        post_logout_redirect_uri, db, client_id
     ):
-        redirect = RedirectResponse(url=payload.post_logout_redirect_uri, status_code=302)
+        redirect = RedirectResponse(url=post_logout_redirect_uri, status_code=302)
         session_service.clear_session_cookie(redirect)
         return redirect
 
@@ -129,8 +132,39 @@ async def logout(
     return MessageResponse(message="Logged out")
 
 
-async def _is_registered_redirect(uri: str, db: AsyncSession) -> bool:
-    """True if uri is a registered redirect_uri of some active app (open-redirect guard)."""
+async def _read_logout_params(request: Request) -> tuple[str | None, str | None]:
+    """Pull (post_logout_redirect_uri, client_id) from a JSON or urlencoded form body.
+
+    A top-level ``<form method=POST>`` (urlencoded) is how the SameSite=Lax session cookie
+    reaches this POST-only endpoint cross-site; JSON is kept for programmatic callers.
+    Parsed manually (no Pydantic body model / no ``Form(...)``) so a single endpoint can
+    accept either content type without FastAPI body-media ambiguity.
+    """
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            data = json.loads(await request.body() or b"null")
+        except (ValueError, TypeError):
+            return None, None
+        if not isinstance(data, dict):
+            return None, None
+    elif "application/x-www-form-urlencoded" in content_type:
+        parsed = parse_qs((await request.body()).decode("utf-8", "ignore"))
+        data = {key: values[0] for key, values in parsed.items() if values}
+    else:
+        return None, None
+    return data.get("post_logout_redirect_uri"), data.get("client_id")
+
+
+async def _is_registered_redirect(uri: str, db: AsyncSession, client_id: str | None = None) -> bool:
+    """True if uri is a registered redirect_uri (open-redirect guard).
+
+    When ``client_id`` is supplied, the uri must be registered for THAT app (tighter, so a
+    uri registered for app B is not accepted when app A logs out); otherwise it may match
+    any active app (back-compat for clientless callers).
+    """
+    if client_id:
+        return await _resolve_authorize_app(client_id, uri, db) is not None
     result = await db.execute(select(Application).where(Application.is_active.is_(True)))
     return any(uri in app.redirect_uris for app in result.scalars())
 

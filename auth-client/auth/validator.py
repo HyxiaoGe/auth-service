@@ -34,13 +34,40 @@ class JWTValidator:
         issuer: str | None = None,
         audience: str | None = None,
         cache_ttl: int = 300,  # seconds to cache JWKS
+        require_token_type: str | None = None,  # opt-in: enforce the JWT "type" claim
     ):
         self.jwks_url = jwks_url
         self.issuer = issuer
         self.audience = audience
         self.cache_ttl = cache_ttl
+        self.require_token_type = require_token_type
         self._jwks_cache: dict | None = None
         self._cache_time: float = 0
+
+    def _build_user(self, payload: dict) -> AuthenticatedUser:
+        """Enforce the optional token-type contract, then map claims to AuthenticatedUser.
+
+        When ``require_token_type`` is set (e.g. "access"), a token whose ``type`` claim
+        does not match is rejected — this keeps refresh tokens from being accepted on
+        protected routes. Default (None) skips the check, so existing consumers are
+        unaffected.
+        """
+        if (
+            self.require_token_type is not None
+            and payload.get("type") != self.require_token_type
+        ):
+            raise jwt.InvalidTokenError(
+                f"Token type {payload.get('type')!r} does not match "
+                f"required {self.require_token_type!r}"
+            )
+
+        return AuthenticatedUser(
+            sub=payload["sub"],
+            email=payload.get("email", ""),
+            aud=payload.get("aud"),
+            scopes=payload.get("scopes", []),
+            raw_payload=payload,
+        )
 
     def _fetch_jwks(self) -> dict:
         """Fetch JWKS from the Auth Service (with caching)."""
@@ -112,13 +139,7 @@ class JWTValidator:
             **kwargs,
         )
 
-        return AuthenticatedUser(
-            sub=payload["sub"],
-            email=payload.get("email", ""),
-            aud=payload.get("aud"),
-            scopes=payload.get("scopes", []),
-            raw_payload=payload,
-        )
+        return self._build_user(payload)
 
     async def verify_async(self, token: str) -> AuthenticatedUser:
         """Verify a JWT token asynchronously."""
@@ -139,10 +160,4 @@ class JWTValidator:
             **kwargs,
         )
 
-        return AuthenticatedUser(
-            sub=payload["sub"],
-            email=payload.get("email", ""),
-            aud=payload.get("aud"),
-            scopes=payload.get("scopes", []),
-            raw_payload=payload,
-        )
+        return self._build_user(payload)

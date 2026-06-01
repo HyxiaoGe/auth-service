@@ -33,6 +33,13 @@ class RevokeRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutRequest(BaseModel):
+    # Both optional: logout is driven by the session cookie. A post_logout_redirect_uri
+    # is honored only when it belongs to a registered application.
+    post_logout_redirect_uri: str | None = None
+    client_id: str | None = None
+
+
 class OAuthCallbackParams(BaseModel):
     code: str
     state: str | None = None

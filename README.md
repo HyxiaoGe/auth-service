@@ -62,30 +62,47 @@ docker compose exec auth python scripts/init_admin.py
 
 ## 业务项目接入
 
-### Python 后端 (pip install)
+新项目接入 SSO 分三步：注册 `client_id` → 装共享 SDK → 接登录/回调。完整步骤见
+[docs/ONBOARDING.md](docs/ONBOARDING.md)，端点与 token 契约见
+[docs/AUTH_CONTRACT.md](docs/AUTH_CONTRACT.md)，可复制模板见 [`examples/`](examples)。
+
+### Python 后端 — [auth-client](auth-client)
+
+```bash
+pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@main#subdirectory=auth-client"
+```
 
 ```python
-from auth import JWTValidator, require_auth
+from auth import JWTValidator
 
-validator = JWTValidator(jwks_url="http://localhost:8100/.well-known/jwks.json")
-
-app = FastAPI()
-app.add_middleware(validator.middleware)
-
-@app.get("/protected")
-async def protected(user=Depends(require_auth)):
-    return {"user_id": user.sub, "app": user.aud}
+validator = JWTValidator(
+    jwks_url=f"{AUTH_URL}/.well-known/jwks.json",
+    issuer=AUTH_URL,             # 校验签发者
+    audience=CLIENT_ID,          # 校验 token 是发给本应用的（IdP 不校验 aud，消费方自己锁）
+    require_token_type="access", # 拒绝 refresh token 走保护路由
+)
+user = validator.verify(token)   # -> AuthenticatedUser(sub, email, aud, scopes, raw_payload)
 ```
 
-### 前端 (Next.js / React)
+完整的「薄 `get_current_user` → 项目自有 user 类型」模式见
+[examples/backend_fastapi_integration.py](examples/backend_fastapi_integration.py)。
+
+### 前端 (Next.js / React) — [auth-client-web](https://github.com/HyxiaoGe/auth-client-web)
+
+```bash
+npm install git+https://github.com/HyxiaoGe/auth-client-web.git
+```
 
 ```typescript
-// 跳转到统一登录页
-window.location.href = `${AUTH_URL}/login?client_id=YOUR_APP_ID&redirect_uri=${CALLBACK_URL}`
+import { configure, silentLogin, login, handleCallback } from "auth-client-web"
 
-// 登录成功后回调拿到 tokens
-const { access_token, refresh_token } = await response.json()
+configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth/callback` })
+// 启动时静默探测 SSO（无本地 token 时）；无会话则回落到 login('google' | 'github')
+// /auth/callback 页调用 handleCallback() 校验 state、换码、存 token
 ```
+
+完整接入（静默探测 + 回调页 + 受保护请求）见
+[examples/frontend_sso_integration.ts](examples/frontend_sso_integration.ts)。
 
 ## API 端点
 
@@ -93,12 +110,15 @@ const { access_token, refresh_token } = await response.json()
 |------|------|------|
 | POST | /auth/register | 邮箱密码注册 |
 | POST | /auth/login | 邮箱密码登录 |
+| GET  | /auth/authorize | SSO 授权端点 (PKCE S256；`prompt=none` 静默登录) |
+| POST | /auth/oauth/token | 授权码换 token (PKCE) |
 | GET  | /auth/oauth/google | Google OAuth 跳转 |
 | GET  | /auth/oauth/google/callback | Google OAuth 回调 |
 | GET  | /auth/oauth/github | GitHub OAuth 跳转 |
 | GET  | /auth/oauth/github/callback | GitHub OAuth 回调 |
 | POST | /auth/token/refresh | 刷新 Access Token |
 | POST | /auth/token/revoke | 撤销 Refresh Token |
+| POST | /auth/logout | 单点登出 (结束 IdP 会话) |
 | GET  | /auth/userinfo | 获取当前用户信息 |
 | GET  | /.well-known/jwks.json | JWKS 公钥端点 |
 | GET  | /admin/apps | 查看接入应用列表 |

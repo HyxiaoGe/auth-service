@@ -30,3 +30,7 @@ docker-compose.override.yml
 # Alembic
 alembic/versions/__pycache__/
 .claude/
+
+# 本地设计稿，勿提交公开仓
+docs/SSO_IDP_SESSION_DESIGN.md
+docs/SSO_SHARED_SDK_DESIGN.md

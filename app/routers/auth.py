@@ -1,11 +1,15 @@
-from fastapi import APIRouter, Depends, Request
+import uuid
+
+from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import User, UserPreference
+from app.models import Application, User, UserPreference
 from app.schemas import (
     LoginRequest,
+    LogoutRequest,
     MessageResponse,
     ProfileUpdateRequest,
     RefreshRequest,
@@ -16,7 +20,8 @@ from app.schemas import (
     UserPreferencesResponse,
 )
 from app.security.deps import CurrentUser, get_current_user
-from app.services import auth_service
+from app.services import auth_service, session_service
+from app.utils.redis import delete_session, get_session
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -61,6 +66,47 @@ async def revoke_token(
     """Revoke a refresh token (logout)."""
     await auth_service.revoke_refresh_token(payload.refresh_token, db)
     return MessageResponse(message="Token revoked successfully")
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    response: Response,
+    payload: LogoutRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Single Logout: destroy the IdP session, revoke all refresh tokens, clear the cookie.
+
+    POST-only (never GET) so it cannot be triggered by a cross-site <img>/navigation.
+    Note: already-issued access tokens are stateless 15-min JWTs and remain valid until
+    they expire -- revoking refresh tokens stops *new* access tokens from being minted.
+    """
+    sid = session_service.read_sid(request)
+    session = await get_session(sid) if sid else None
+    if session:
+        user_id = session.get("user_id")
+        if user_id:
+            await auth_service._revoke_all_user_tokens(uuid.UUID(user_id), db)
+    if sid:
+        await delete_session(sid)
+
+    if (
+        payload
+        and payload.post_logout_redirect_uri
+        and await _is_registered_redirect(payload.post_logout_redirect_uri, db)
+    ):
+        redirect = RedirectResponse(url=payload.post_logout_redirect_uri, status_code=302)
+        session_service.clear_session_cookie(redirect)
+        return redirect
+
+    session_service.clear_session_cookie(response)
+    return MessageResponse(message="Logged out")
+
+
+async def _is_registered_redirect(uri: str, db: AsyncSession) -> bool:
+    """True if uri is a registered redirect_uri of some active app (open-redirect guard)."""
+    result = await db.execute(select(Application).where(Application.is_active.is_(True)))
+    return any(uri in app.redirect_uris for app in result.scalars())
 
 
 def _build_preferences(pref: UserPreference | None) -> UserPreferencesResponse:

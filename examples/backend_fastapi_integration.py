@@ -20,10 +20,9 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from auth import JWTValidator  # from the auth-client SDK
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-from auth import JWTValidator  # from the auth-client SDK
 
 # ---------------------------------------------------------------------------
 # 1. Config (env-driven)

@@ -24,8 +24,9 @@ from app.schemas import (
     UserPreferencesResponse,
 )
 from app.security.deps import CurrentUser, get_current_user
+from app.security.revocation import revoke_user_access_tokens
 from app.services import auth_service, oauth_service, session_service
-from app.utils.redis import delete_session, get_session, revoke_user_access_tokens
+from app.utils.redis import delete_session, get_session
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 

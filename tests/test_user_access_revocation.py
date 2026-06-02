@@ -10,7 +10,7 @@ earlier than T. The marker's TTL = access-token lifetime, after which no pre-log
 can still be unexpired, so it self-cleans.
 """
 
-from app.utils import redis as redis_util
+from app.security import revocation as redis_util
 
 
 async def test_no_marker_means_not_revoked():

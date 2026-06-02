@@ -4,7 +4,7 @@ from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel
 
 from app.security.jwt_handler import decode_token
-from app.utils.redis import is_user_access_revoked
+from app.security.revocation import is_user_access_revoked
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

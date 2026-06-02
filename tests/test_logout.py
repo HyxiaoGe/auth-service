@@ -17,6 +17,7 @@ from fastapi import Request, Response
 from fastapi.responses import RedirectResponse
 
 from app.routers import auth
+from app.security import revocation
 from app.utils import redis as redis_util
 
 
@@ -79,13 +80,13 @@ async def test_logout_writes_user_access_revocation_marker(monkeypatch):
     resp = Response()
     await auth.logout(request=_request(sid="s5"), response=resp, db=None)
 
-    revoked_at = await redis_util.get_user_revoked_at(str(uid))
+    revoked_at = await revocation.get_user_revoked_at(str(uid))
     assert revoked_at is not None  # in-flight access tokens for this user are now revoked
 
     # TTL = access-token lifetime (+slack) so the marker self-cleans once no pre-logout
     # token can still be unexpired. Pin it here so a wrong TTL in logout() can't slip through.
-    r = await redis_util.get_redis()
-    ttl = await r.ttl(f"{redis_util.USER_REVOKED_PREFIX}{uid}")
+    r = await revocation.get_redis()
+    ttl = await r.ttl(f"{revocation.USER_REVOKED_PREFIX}{uid}")
     expected = auth.settings.access_token_expire_minutes * 60 + 60
     assert expected - 5 < ttl <= expected
 

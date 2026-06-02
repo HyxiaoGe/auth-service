@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 
 from app.security import deps
-from app.utils import redis as redis_util
+from app.security import revocation as redis_util
 
 
 def _creds() -> HTTPAuthorizationCredentials:

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 
 from app.config import get_settings
@@ -9,6 +10,8 @@ from app.services.oauth_clients import create_github_client, create_google_clien
 from app.utils.redis import get_redis, store_auth_code
 
 settings = get_settings()
+
+logger = logging.getLogger(__name__)
 
 OAUTH_STATE_PREFIX = "oauth_state:"
 OAUTH_STATE_TTL = 300  # 5 minutes
@@ -100,6 +103,9 @@ async def create_oauth_state(
     state = secrets.token_urlsafe(32)
     r = await get_redis()
     await r.setex(f"{OAUTH_STATE_PREFIX}{state}", OAUTH_STATE_TTL, json.dumps(payload))
+    # Log only the first 12 chars (~72 bits) so create can be correlated with a later
+    # consume/missing without ever putting the full single-use token in the logs.
+    logger.info("oauth_state.create state=%s client_id=%s provider=%s", state[:12], client_id, provider)
     return state
 
 

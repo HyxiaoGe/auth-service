@@ -1,7 +1,8 @@
+import logging
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,8 @@ from app.services import auth_service, oauth_service, session_service
 from app.utils.redis import consume_auth_code
 
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== Google ====================
@@ -30,21 +33,32 @@ async def google_login(
 
 @router.get("/google/callback")
 async def google_callback(
+    request: Request,
     code: str,
     state: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Google OAuth callback. Generates a one-time auth code and redirects to frontend."""
     if not state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing state parameter")
+        logger.warning(
+            "oauth_state.missing provider=google reason=absent client_ip=%s code=%s",
+            _client_ip(request),
+            bool(code),
+        )
+        return _state_error_page()
 
     try:
         state_data = await oauth_service.verify_and_consume_state(state)
-    except ValueError as err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter"
-        ) from err
+    except ValueError:
+        logger.warning(
+            "oauth_state.missing provider=google reason=not_found state=%s client_ip=%s code=%s",
+            state[:12],
+            _client_ip(request),
+            bool(code),
+        )
+        return _state_error_page()
 
+    logger.info("oauth_state.consume provider=google state=%s ok", state[:12])
     client_id = state_data.get("client_id")
     redirect_uri = state_data.get("redirect_uri")
     if not client_id or not redirect_uri:
@@ -89,21 +103,32 @@ async def github_login(
 
 @router.get("/github/callback")
 async def github_callback(
+    request: Request,
     code: str,
     state: str | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """GitHub OAuth callback. Generates a one-time auth code and redirects to frontend."""
     if not state:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing state parameter")
+        logger.warning(
+            "oauth_state.missing provider=github reason=absent client_ip=%s code=%s",
+            _client_ip(request),
+            bool(code),
+        )
+        return _state_error_page()
 
     try:
         state_data = await oauth_service.verify_and_consume_state(state)
-    except ValueError as err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired state parameter"
-        ) from err
+    except ValueError:
+        logger.warning(
+            "oauth_state.missing provider=github reason=not_found state=%s client_ip=%s code=%s",
+            state[:12],
+            _client_ip(request),
+            bool(code),
+        )
+        return _state_error_page()
 
+    logger.info("oauth_state.consume provider=github state=%s ok", state[:12])
     client_id = state_data.get("client_id")
     redirect_uri = state_data.get("redirect_uri")
     if not client_id or not redirect_uri:
@@ -171,6 +196,63 @@ async def exchange_code_for_tokens(
 
 
 # ==================== Helpers ====================
+
+
+def _client_ip(request: Request) -> str:
+    """Real client IP for logging. We sit behind nginx/cloudflared, so prefer the first
+    X-Forwarded-For hop; fall back to the direct peer.
+
+    XFF is attacker-controlled and this value lands in log lines, so the result is
+    sanitized: take only the first physical line (a forged newline would otherwise split
+    one record into two -- log injection) and drop control chars / cap length. A
+    whitespace-only hop strips to empty and falls through to the peer rather than emitting
+    a blank ``client_ip=`` (which would defeat the instrumentation)."""
+    xff = request.headers.get("x-forwarded-for") if request is not None else None
+    candidate = xff.split(",")[0].strip() if xff else ""
+    if not candidate and request is not None and request.client:
+        candidate = request.client.host
+    if not candidate:
+        return "unknown"
+    candidate = candidate.splitlines()[0].strip()
+    candidate = "".join(c for c in candidate if c.isprintable())
+    return candidate[:45] or "unknown"
+
+
+def _state_error_page() -> HTMLResponse:
+    """Branded 400 for a missing/expired ``oauth_state``.
+
+    The Redis payload (client_id/redirect_uri) is gone together with the state, so we have
+    no app to send the user back to -- a redirect here would risk a loop or an open
+    redirect. We render a friendly, self-contained page instead of the raw JSON 400 that
+    used to leave the user stranded on a looks-broken dead end. The accompanying
+    ``oauth_state.missing`` log line is where the diagnosis lives.
+    """
+    html = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录会话已过期 · Session expired</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:#f6f7f9;color:#1f2328;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center}
+  .card{background:#fff;max-width:440px;width:90%;padding:40px 32px;border-radius:14px;
+        box-shadow:0 1px 4px rgba(0,0,0,.08);text-align:center}
+  h1{font-size:20px;margin:0 0 12px}
+  p{font-size:14px;line-height:1.6;color:#57606a;margin:8px 0}
+  .hint{font-size:12.5px;color:#8b949e;margin-top:20px}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>登录会话已过期</h1>
+    <p>你的登录会话已失效或已超时（通常因为停留过久或网络较慢）。请<strong>返回应用并重新登录</strong>，不要刷新本页。</p>
+    <p>Your sign-in session has expired or is invalid. Please return to the app and sign in again.</p>
+    <p class="hint">如果反复出现，请稍后再试。</p>
+  </div>
+</body>
+</html>"""
+    return HTMLResponse(content=html, status_code=400)
 
 
 def _enforce_pkce(code_data: dict, code_verifier: str | None) -> None:

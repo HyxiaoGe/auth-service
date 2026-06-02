@@ -9,12 +9,18 @@ stores neither, so the callback must still produce a bare ?code= redirect (zero-
 import uuid
 from urllib.parse import parse_qs, urlparse
 
+from starlette.requests import Request
+
 from app.routers import oauth
 from app.services import oauth_service
 from app.utils.redis import consume_auth_code
 
 CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 CB = "https://app.example/cb"
+
+
+def _req() -> Request:
+    return Request({"type": "http", "headers": [], "client": ("10.0.0.9", 0)})
 
 
 class _FakeUser:
@@ -52,7 +58,7 @@ async def test_callback_from_authorize_echoes_state_and_binds_challenge(monkeypa
         response_type="code",
     )
 
-    resp = await oauth.google_callback(code="x", state=state, db=None)
+    resp = await oauth.google_callback(request=_req(), code="x", state=state, db=None)
 
     q = parse_qs(urlparse(resp.headers["location"]).query)
     assert q["state"] == ["APPSTATE"]  # app's CSRF state echoed back
@@ -67,7 +73,7 @@ async def test_legacy_callback_has_no_state_and_no_challenge(monkeypatch):
     # legacy direct flow: oauth_state carries only client_id + redirect_uri
     state = await oauth_service.create_oauth_state("appA", CB)
 
-    resp = await oauth.google_callback(code="x", state=state, db=None)
+    resp = await oauth.google_callback(request=_req(), code="x", state=state, db=None)
 
     q = parse_qs(urlparse(resp.headers["location"]).query)
     assert "state" not in q  # nothing to echo

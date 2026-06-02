@@ -143,8 +143,10 @@ revokes all of the user's refresh tokens, clears the session cookie. If
 `post_logout_redirect_uri` is a registered redirect uri → `302` there (open-redirect
 guarded); otherwise `200 {message}`. When `client_id` is supplied the uri must be
 registered **for that app** (tighter); without it, any active app's registered uri matches.
-Already-issued access tokens stay valid until expiry. This is the cross-app logout; per-app
-token revoke is `/auth/token/revoke`.
+For true cross-app logout, the IdP also writes a **per-user access-token revocation marker**
+(see "Single-Logout revocation" below) so other apps' already-issued access tokens stop
+working on their next request instead of lingering until `exp`. This is the cross-app
+logout; per-app token revoke is `/auth/token/revoke`.
 
 ### `GET /.well-known/jwks.json` — verification keys
 
@@ -201,6 +203,44 @@ Why each option matters:
   on access-protected routes.
 
 Signature alg is pinned to `RS256`. JWKS is cached (`cache_ttl`, default 300s).
+
+### Single-Logout revocation (in-flight access tokens)
+
+Access tokens are stateless JWTs, so the signature check above passes even after the user
+logged out elsewhere — the token stays valid until `exp` (≤15 min). To honor "logout once =
+logout everywhere", `POST /auth/logout` writes a **per-user revocation marker** into the
+**shared Redis** that every consumer on this deployment already connects to:
+
+| | |
+|-|-|
+| key | `revoked_user:{sub}` (`sub` = the access token's user id) |
+| value | wall-clock epoch seconds of the logout instant, as a **float** (`time.time()`) |
+| ttl | access-token lifetime — once it elapses no pre-logout token can still be unexpired, so it self-cleans |
+| rule | after signature/issuer/audience/type validation, reject (`401`) iff the marker exists **and** `token.iat < marker` |
+
+**Keep the marker a float, and use strict `<`.** A JWT `iat` is *integer* epoch seconds
+(sub-second precision is truncated when the token is minted), while the marker is the
+fractional logout instant. The comparison therefore **over-revokes by design**: every token
+minted before the logout instant is rejected (the guarantee we want), and the only token that
+would be falsely revoked is a re-login completing inside the *same wall-clock second* as the
+logout — which cannot happen, because an OAuth re-auth takes several round-trips, so a fresh
+token's `iat` always lands in a later second and survives. Do **not** "simplify" by storing
+`int(logout_time)`: a token minted 0.3 s *before* a logout at `T.5` would then truncate to
+`iat == T`, pass `T < T`, and wrongly stay valid for up to its full TTL — a real hole.
+
+A consumer backend should perform this check right after `validator.verify(token)` and
+before trusting the token. It is one Redis `GET` per authenticated request (cheap on the
+shared single-box Redis). **Fail open:** because the check is now on the auth hot path of
+every request, a Redis read error must be swallowed (log + treat as not-revoked), not turned
+into a `500` — otherwise a single shared-Redis blip locks every user out of every app. The
+revocation lag then degrades to the token's own `exp` (≤15 min) until Redis recovers.
+Likewise, `/auth/logout` writes the marker best-effort: a write failure is logged but does
+not fail the logout (the cookie + session are still cleared and refresh tokens still revoked).
+
+This marker is the only thing that makes a foreign logout take effect on the **next API call**
+rather than after the access-token TTL. Without shared-Redis access a consumer degrades to
+"valid until `exp`"; instant cross-app logout then requires introspection or back-channel
+logout (not currently provided).
 
 ## Security requirements for consumers
 

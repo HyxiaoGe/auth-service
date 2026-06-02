@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 import uuid
 from urllib.parse import parse_qs, urlencode
 
@@ -7,6 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.models import Application, User, UserPreference
 from app.schemas import (
@@ -22,9 +25,13 @@ from app.schemas import (
 )
 from app.security.deps import CurrentUser, get_current_user
 from app.services import auth_service, oauth_service, session_service
-from app.utils.redis import delete_session, get_session
+from app.utils.redis import delete_session, get_session, revoke_user_access_tokens
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+logger = logging.getLogger(__name__)
+
+settings = get_settings()
 
 
 def oauth_error(
@@ -106,9 +113,10 @@ async def logout(
     ``post_logout_redirect_uri`` and ``client_id`` may be sent as a JSON body OR as
     urlencoded form fields -- the form variant lets a top-level ``<form method=POST>``
     deliver them so the SameSite=Lax session cookie rides the navigation to this
-    cross-site, POST-only endpoint. Note: already-issued access tokens are stateless
-    15-min JWTs and remain valid until they expire -- revoking refresh tokens stops *new*
-    access tokens from being minted.
+    cross-site, POST-only endpoint. For true "logout everywhere", in-flight stateless
+    access tokens are also killed via a per-user revocation marker (see
+    ``revoke_user_access_tokens``), which resource servers check on the next request --
+    so a token already held by another app stops working without waiting out its TTL.
     """
     post_logout_redirect_uri, client_id = await _read_logout_params(request)
 
@@ -118,12 +126,20 @@ async def logout(
         user_id = session.get("user_id")
         if user_id:
             await auth_service._revoke_all_user_tokens(uuid.UUID(user_id), db)
+            # Also kill in-flight stateless access tokens for this user: revoking refresh
+            # tokens only stops NEW ones, but the user's other apps still hold valid access
+            # tokens until they expire. TTL = access-token lifetime so the marker self-cleans.
+            # Best-effort: this marker is an optimization on top of refresh-token revocation,
+            # so a shared-Redis blip must not break logout itself (cookie + session below must
+            # still clear). Degraded mode: those access tokens then live out their <=15-min TTL.
+            try:
+                await revoke_user_access_tokens(user_id, time.time(), settings.access_token_expire_minutes * 60 + 60)
+            except Exception:
+                logger.warning("failed to write access-token revocation marker on logout", exc_info=True)
     if sid:
         await delete_session(sid)
 
-    if post_logout_redirect_uri and await _is_registered_redirect(
-        post_logout_redirect_uri, db, client_id
-    ):
+    if post_logout_redirect_uri and await _is_registered_redirect(post_logout_redirect_uri, db, client_id):
         redirect = RedirectResponse(url=post_logout_redirect_uri, status_code=302)
         session_service.clear_session_cookie(redirect)
         return redirect

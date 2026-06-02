@@ -9,9 +9,14 @@ real against fakeredis.
 import uuid
 
 from fastapi.responses import RedirectResponse
+from starlette.requests import Request
 
 from app.routers import oauth
 from app.utils import redis as redis_util
+
+
+def _req() -> Request:
+    return Request({"type": "http", "headers": [], "client": ("10.0.0.9", 0)})
 
 
 class _FakeUser:
@@ -43,7 +48,7 @@ async def test_google_callback_sets_session_cookie_without_changing_redirect(mon
     uid = uuid.uuid4()
     _stub_oauth(monkeypatch, "exchange_google_code", uid)
 
-    resp = await oauth.google_callback(code="x", state="s", db=None)
+    resp = await oauth.google_callback(request=_req(), code="x", state="s", db=None)
 
     assert isinstance(resp, RedirectResponse)
     assert resp.status_code == 302
@@ -64,7 +69,7 @@ async def test_github_callback_sets_session_cookie_with_github_amr(monkeypatch):
     uid = uuid.uuid4()
     _stub_oauth(monkeypatch, "exchange_github_code", uid)
 
-    resp = await oauth.github_callback(code="x", state="s", db=None)
+    resp = await oauth.github_callback(request=_req(), code="x", state="s", db=None)
 
     assert resp.status_code == 302
     assert resp.headers["location"].startswith("https://app.example/cb?code=")

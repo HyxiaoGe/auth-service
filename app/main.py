@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +11,16 @@ from app.security.jwt_handler import get_jwks
 from app.utils.redis import close_redis
 
 settings = get_settings()
+
+# App logging: the service previously emitted nothing to stdout/stderr (audit lived only in
+# the LoginLog table). uvicorn configures only its own uvicorn.* loggers and does NOT add a
+# root handler, so app.* INFO records would otherwise be dropped. This module is imported
+# after uvicorn has applied its dict-config, so basicConfig runs last and installs the
+# missing root handler at INFO -- surfacing the oauth_state.create/consume/missing
+# diagnostics in `docker logs`. (basicConfig only no-ops if a root handler already exists,
+# which uvicorn's default config does not create; should that ever change, app.* logs would
+# silently fall back to WARNING and this line would need an explicit handler instead.)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
 @asynccontextmanager

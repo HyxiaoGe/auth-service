@@ -61,6 +61,61 @@ async def test_logout_deletes_session_revokes_tokens_and_clears_cookie(monkeypat
     assert "Max-Age=0" in resp.headers["set-cookie"]  # cookie cleared
 
 
+async def test_logout_writes_user_access_revocation_marker(monkeypatch):
+    """SLO completeness: logout must also kill in-flight stateless access tokens.
+
+    Revoking refresh tokens only stops NEW access tokens; the user's currently-held access
+    tokens (in other apps like audio) stay valid until they expire. logout writes a per-user
+    revocation marker so resource servers reject those in-flight tokens on the next request.
+    """
+    uid = uuid.uuid4()
+    await redis_util.create_session("s5", {"user_id": str(uid)}, ttl=100)
+
+    async def fake_revoke(user_id, db):
+        return None
+
+    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+
+    resp = Response()
+    await auth.logout(request=_request(sid="s5"), response=resp, db=None)
+
+    revoked_at = await redis_util.get_user_revoked_at(str(uid))
+    assert revoked_at is not None  # in-flight access tokens for this user are now revoked
+
+    # TTL = access-token lifetime (+slack) so the marker self-cleans once no pre-logout
+    # token can still be unexpired. Pin it here so a wrong TTL in logout() can't slip through.
+    r = await redis_util.get_redis()
+    ttl = await r.ttl(f"{redis_util.USER_REVOKED_PREFIX}{uid}")
+    expected = auth.settings.access_token_expire_minutes * 60 + 60
+    assert expected - 5 < ttl <= expected
+
+
+async def test_logout_completes_even_when_marker_write_fails(monkeypatch):
+    """The marker is a best-effort optimization layered on top of refresh-token revocation.
+
+    A shared-Redis blip must never break logout itself: the cookie still has to be cleared
+    and the session destroyed. (Degraded mode: in-flight access tokens then live out their
+    <=15-min TTL, but the user is genuinely logged out everywhere else.)
+    """
+    uid = uuid.uuid4()
+    await redis_util.create_session("s6", {"user_id": str(uid)}, ttl=100)
+
+    async def fake_revoke(user_id, db):
+        return None
+
+    async def boom_marker(*args, **kwargs):
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth, "revoke_user_access_tokens", boom_marker)
+
+    resp = Response()
+    await auth.logout(request=_request(sid="s6"), response=resp, db=None)  # must not raise
+
+    assert await redis_util.get_session("s6") is None  # session still destroyed
+    assert "Max-Age=0" in resp.headers["set-cookie"]  # cookie still cleared
+
+
 async def test_logout_without_session_is_noop_but_clears_cookie(monkeypatch):
     calls = {"n": 0}
 

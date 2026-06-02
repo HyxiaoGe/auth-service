@@ -4,6 +4,7 @@ from jwt.exceptions import InvalidTokenError
 from pydantic import BaseModel
 
 from app.security.jwt_handler import decode_token
+from app.utils.redis import is_user_access_revoked
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -36,6 +37,15 @@ async def get_current_user(
             detail=f"Invalid token: {e}",
             headers={"WWW-Authenticate": "Bearer"},
         ) from e
+
+    # Single Logout: a stateless access token stays cryptographically valid until it expires,
+    # so after a logout we must reject in-flight tokens issued before it (shared-Redis marker).
+    if await is_user_access_revoked(payload["sub"], payload.get("iat")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     return CurrentUser(
         sub=payload["sub"],

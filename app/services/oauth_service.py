@@ -16,6 +16,16 @@ logger = logging.getLogger(__name__)
 OAUTH_STATE_PREFIX = "oauth_state:"
 OAUTH_STATE_TTL = 300  # 5 minutes
 
+# Durable, read-only recovery copy of a state's routing (client_id + redirect_uri only).
+# The main oauth_state above is single-use (getdel) and short-lived, so its loss -- a slow
+# round-trip past TTL, or a duplicate callback that already consumed it -- takes the only
+# record of WHERE to return the user with it. This second copy decouples routing-lifetime
+# from the single-use CSRF state so a lost state can bounce back to the app instead of
+# dead-ending on the branded page. Longer TTL (covers a user dawdling on Google's consent
+# screen) and never consumed (so duplicate callbacks both recover). Carries no secret.
+OAUTH_STATE_RECOVER_PREFIX = "oauth_state_recover:"
+OAUTH_STATE_RECOVER_TTL = 3600  # 1 hour
+
 
 # ==================== One-time auth code ====================
 
@@ -103,6 +113,14 @@ async def create_oauth_state(
     state = secrets.token_urlsafe(32)
     r = await get_redis()
     await r.setex(f"{OAUTH_STATE_PREFIX}{state}", OAUTH_STATE_TTL, json.dumps(payload))
+    # Durable routing-only recovery copy (see OAUTH_STATE_RECOVER_PREFIX): outlives the
+    # single-use main state so a lost/duplicate/slow callback can still bounce the user
+    # back to the app instead of dead-ending. Only the public {client_id, redirect_uri}.
+    await r.setex(
+        f"{OAUTH_STATE_RECOVER_PREFIX}{state}",
+        OAUTH_STATE_RECOVER_TTL,
+        json.dumps({"client_id": client_id, "redirect_uri": redirect_uri}),
+    )
     # Log only the first 12 chars (~72 bits) so create can be correlated with a later
     # consume/missing without ever putting the full single-use token in the logs.
     logger.info("oauth_state.create state=%s client_id=%s provider=%s", state[:12], client_id, provider)
@@ -115,6 +133,23 @@ async def verify_and_consume_state(state: str) -> dict:
     raw = await r.getdel(f"{OAUTH_STATE_PREFIX}{state}")
     if raw is None:
         raise ValueError("Invalid or expired OAuth state")
+    return json.loads(raw)
+
+
+async def recover_state_routing(state: str) -> dict | None:
+    """Read the durable recovery copy's routing for a consumed/expired state.
+
+    Returns ``{client_id, redirect_uri}`` when the longer-lived recovery copy is still
+    present, else ``None`` when truly unrecoverable -- a forged/garbage state (which never
+    had a copy) or one past the recovery TTL. The None case is what keeps the branded page
+    as a genuine last resort. Read-only (never deletes) so a duplicate callback recovers
+    too. The recovery copy's existence is itself the "we minted this state" proof, so an
+    attacker-supplied state cannot trigger a bounce.
+    """
+    r = await get_redis()
+    raw = await r.get(f"{OAUTH_STATE_RECOVER_PREFIX}{state}")
+    if raw is None:
+        return None
     return json.loads(raw)
 
 

@@ -50,13 +50,7 @@ async def google_callback(
     try:
         state_data = await oauth_service.verify_and_consume_state(state)
     except ValueError:
-        logger.warning(
-            "oauth_state.missing provider=google reason=not_found state=%s client_ip=%s code=%s",
-            state[:12],
-            _client_ip(request),
-            bool(code),
-        )
-        return _state_error_page()
+        return await _recover_or_error_page(request, state=state, code=code, db=db, provider="google")
 
     logger.info("oauth_state.consume provider=google state=%s ok", state[:12])
     client_id = state_data.get("client_id")
@@ -120,13 +114,7 @@ async def github_callback(
     try:
         state_data = await oauth_service.verify_and_consume_state(state)
     except ValueError:
-        logger.warning(
-            "oauth_state.missing provider=github reason=not_found state=%s client_ip=%s code=%s",
-            state[:12],
-            _client_ip(request),
-            bool(code),
-        )
-        return _state_error_page()
+        return await _recover_or_error_page(request, state=state, code=code, db=db, provider="github")
 
     logger.info("oauth_state.consume provider=github state=%s ok", state[:12])
     client_id = state_data.get("client_id")
@@ -216,6 +204,62 @@ def _client_ip(request: Request) -> str:
     candidate = candidate.splitlines()[0].strip()
     candidate = "".join(c for c in candidate if c.isprintable())
     return candidate[:45] or "unknown"
+
+
+async def _redirect_uri_registered(client_id: str, redirect_uri: str, db: AsyncSession) -> bool:
+    """Non-raising open-redirect guard: True iff redirect_uri is registered for client_id.
+
+    The raising ``_validate_redirect_uri`` is for the happy path; recovery needs a boolean so
+    an unregistered (forged-routing) uri quietly falls back to the branded page instead of
+    500-ing.
+    """
+    result = await db.execute(
+        select(Application).where(Application.client_id == client_id, Application.is_active.is_(True))
+    )
+    app = result.scalar_one_or_none()
+    return app is not None and redirect_uri in app.redirect_uris
+
+
+async def _recover_or_error_page(
+    request: Request, *, state: str, code: str, db: AsyncSession, provider: str
+) -> RedirectResponse | HTMLResponse:
+    """A lost main ``oauth_state`` (expired past TTL, or a duplicate callback that already
+    consumed it): try the durable recovery copy to bounce the user BACK to their app rather
+    than dead-ending on the branded page.
+
+    Root-cause fix for the "登录会话已过期" dead end: the only record of WHERE to return the
+    user used to die together with the single-use state. The recovery copy carries just
+    ``{client_id, redirect_uri}`` so we can still send a ``302 {redirect_uri}?error=login_required``
+    -- the app's SDK reads the error and lets the user retry cleanly. We never exchange the
+    Google ``code`` nor mint a token here (PKCE challenge/app_state are gone with the state),
+    so this path issues no credentials and carries no replay/CSRF risk. The recovered
+    redirect_uri is still validated as registered (open-redirect guard). Only a truly
+    unrecoverable state -- forged (no copy ever existed), past the recovery TTL, or an
+    unregistered uri -- falls through to the branded page, preserving it as a last resort and
+    keeping the ``oauth_state.missing`` instrumentation intact.
+    """
+    routing = await oauth_service.recover_state_routing(state)
+    if routing:
+        client_id = routing.get("client_id")
+        redirect_uri = routing.get("redirect_uri")
+        if client_id and redirect_uri and await _redirect_uri_registered(client_id, redirect_uri, db):
+            logger.info(
+                "oauth_state.recovered provider=%s state=%s client_ip=%s -> bounce login_required",
+                provider,
+                state[:12],
+                _client_ip(request),
+            )
+            params = {"error": "login_required", "error_description": "session expired, please sign in again"}
+            return RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
+
+    logger.warning(
+        "oauth_state.missing provider=%s reason=not_found state=%s client_ip=%s code=%s",
+        provider,
+        state[:12],
+        _client_ip(request),
+        bool(code),
+    )
+    return _state_error_page()
 
 
 def _state_error_page() -> HTMLResponse:

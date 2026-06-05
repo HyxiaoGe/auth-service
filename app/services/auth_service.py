@@ -159,12 +159,16 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
         # reuse attack. Re-issue the successor ONCE for such a token, but only if it was killed
         # by a normal rotation, inside the narrow grace window, not already consumed, the account
         # is active, and no later SLO logout has invalidated the chain. Everything else
-        # (super-window, already-consumed, /logout-revoked, real theft) keeps the original
-        # behavior: treat as reuse and revoke ALL of the user's tokens.
+        # (super-window, already-consumed, /logout-revoked, real theft) is treated as reuse and
+        # revokes the user's tokens -- but ONLY for the offending app (stored.app_client_id).
+        # Other first-party apps hold independent rotation lineages; nuking them too turns one
+        # app's lost-rotation replay into a cross-app spurious logout (observed live: an audio
+        # replay collaterally revoked the same user's valid fusion token). A deliberate
+        # account-wide logout still sweeps every app via the /logout path (app_client_id=None).
         if _within_rotation_grace(stored) and not await _logout_after_rotation(stored):
             stored.grace_consumed = True  # single-use gate (atomic under the row lock above)
             return await _issue_tokens(stored.user, stored.app_client_id, db)
-        await _revoke_all_user_tokens(stored.user_id, db)
+        await _revoke_all_user_tokens(stored.user_id, db, app_client_id=stored.app_client_id)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
     user = stored.user
@@ -355,11 +359,20 @@ async def _log_login(
         await db.commit()
 
 
-async def _revoke_all_user_tokens(user_id: uuid.UUID, db: AsyncSession):
-    """Revoke all refresh tokens for a user (security measure)."""
-    result = await db.execute(
-        select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.is_revoked.is_(False))
-    )
+async def _revoke_all_user_tokens(user_id: uuid.UUID, db: AsyncSession, app_client_id: str | None = None):
+    """Revoke a user's active refresh tokens (security measure).
+
+    ``app_client_id`` scopes the blast radius. A reuse-detected token only compromises the
+    rotation lineage of the app it was issued for; other first-party apps hold independent
+    lineages and must NOT be collateral-revoked, or a lost-rotation replay in one app silently
+    logs the user out of every other app (the cross-app spurious logout). Reuse detection passes
+    the offending token's ``app_client_id`` to scope revocation to that app. ``None`` keeps the
+    original account-wide sweep for deliberate "logout everywhere" / account-disable flows.
+    """
+    conditions = [RefreshToken.user_id == user_id, RefreshToken.is_revoked.is_(False)]
+    if app_client_id is not None:
+        conditions.append(RefreshToken.app_client_id == app_client_id)
+    result = await db.execute(select(RefreshToken).where(*conditions))
     for token in result.scalars():
         token.is_revoked = True
         token.revoked_at = datetime.now(UTC)

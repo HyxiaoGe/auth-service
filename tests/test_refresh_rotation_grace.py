@@ -1,11 +1,17 @@
-"""Rotation grace window on refresh-token reuse detection.
+"""Rotation grace window + per-app revoke scope on refresh-token reuse detection.
 
 When a rotation RESPONSE is lost over a flaky tunnel the client keeps the old (now-revoked)
 token and replays it. The original code treated ANY replay of a revoked token as a reuse
-attack and revoked every token the user held -- across all apps -- logging them out. The grace
-window re-issues the successor ONCE for a token that was killed by a normal rotation within the
-last few seconds (a lost-response retry), while keeping the revoke-all hammer for everything
-that actually looks like theft.
+attack and revoked every token the user held -- across all apps -- logging them out. Two
+fixes live here:
+
+* Grace window: re-issue the successor ONCE for a token that was killed by a normal rotation
+  within the last few seconds (a lost-response retry), while keeping the revoke-all hammer for
+  everything that actually looks like theft.
+* Per-app revoke scope: when reuse IS treated as theft, revoke only the offending app's tokens
+  (``stored.app_client_id``) instead of every app's. Each first-party app holds an independent
+  rotation lineage; nuking them all turns one app's lost-rotation replay into a cross-app
+  spurious logout (observed live). Deliberate account-wide logout still sweeps every app.
 
 These tests follow the suite's no-real-DB style (see ``test_logout``): the DB query and the
 two terminal helpers (``_issue_tokens`` / ``_revoke_all_user_tokens``) are faked/monkeypatched
@@ -68,15 +74,16 @@ def patched(monkeypatch):
     monkeypatch.setattr(auth_service, "decode_token", lambda *a, **k: None)
     monkeypatch.setattr(auth_service, "hash_token", lambda _s: "h")
 
-    calls = {"issued": False, "issued_user": None, "revoked": False}
+    calls = {"issued": False, "issued_user": None, "revoked": False, "revoked_app": "UNSET"}
 
     async def fake_issue(user, app_client_id, db):
         calls["issued"] = True
         calls["issued_user"] = user
         return "TOKENS"
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         calls["revoked"] = True
+        calls["revoked_app"] = app_client_id
 
     monkeypatch.setattr(auth_service, "_issue_tokens", fake_issue)
     monkeypatch.setattr(auth_service, "_revoke_all_user_tokens", fake_revoke)
@@ -204,3 +211,55 @@ async def test_marker_check_fails_open_to_grace(patched, monkeypatch):
     result = await _refresh(stored)
     assert result == "TOKENS"
     assert patched["issued"] is True and patched["revoked"] is False
+
+
+# ---- per-app revoke scope (cross-app collateral fix) ------------------------------------
+
+
+async def test_reuse_revoke_scoped_to_offending_app(patched):
+    """Reuse detected on app_x's token revokes the user's tokens ONLY for app_x. Other apps'
+    independent rotation lineages must survive, or one app's lost-rotation replay logs the user
+    out everywhere (observed live: an audio replay collaterally revoked a valid fusion token)."""
+    stored = _stored(is_revoked=True, rotated_at=None)  # /logout-style kill -> straight to revoke
+    with pytest.raises(HTTPException) as exc:
+        await _refresh(stored)
+    assert exc.value.status_code == 401
+    assert patched["revoked"] is True
+    assert patched["revoked_app"] == "app_x"  # scoped, not the account-wide None
+
+
+class _CapturingDB:
+    """Captures the SELECT statement and yields preset tokens so we can assert the WHERE scope
+    of ``_revoke_all_user_tokens`` itself (no real DB; we inspect the compiled whereclause)."""
+
+    def __init__(self, tokens):
+        self._tokens = tokens
+        self.stmt = None
+        self.committed = False
+
+    async def execute(self, stmt, *_a, **_k):
+        self.stmt = stmt
+        return SimpleNamespace(scalars=lambda: list(self._tokens))
+
+    async def commit(self):
+        self.committed = True
+
+
+def _revocable():
+    return SimpleNamespace(is_revoked=False, revoked_at=None)
+
+
+async def test_revoke_with_app_client_id_filters_by_app():
+    tokens = [_revocable(), _revocable()]
+    db = _CapturingDB(tokens)
+    await auth_service._revoke_all_user_tokens(uuid.uuid4(), db, app_client_id="app_x")
+    assert "app_client_id" in str(db.stmt.whereclause)  # WHERE-only -> the app filter is present
+    assert all(t.is_revoked for t in tokens) and db.committed
+
+
+async def test_revoke_without_app_client_id_is_account_wide():
+    tokens = [_revocable()]
+    db = _CapturingDB(tokens)
+    await auth_service._revoke_all_user_tokens(uuid.uuid4(), db)  # /logout path -> sweep every app
+    assert "app_client_id" not in str(db.stmt.whereclause)  # no per-app narrowing
+    assert tokens[0].is_revoked is True and db.committed

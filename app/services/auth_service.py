@@ -1,3 +1,4 @@
+import logging
 import secrets
 import uuid
 from datetime import UTC, datetime
@@ -23,8 +24,11 @@ from app.security.jwt_handler import (
     hash_token,
 )
 from app.security.password import hash_password, verify_password
+from app.security.revocation import get_user_revoked_at
 
 settings = get_settings()
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== Registration ====================
@@ -133,29 +137,75 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
     except Exception as err:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from err
 
-    # Check DB
+    # Check DB. FOR UPDATE locks the row so a concurrent replay of the same token serializes
+    # behind us -- the grace window below can then be consumed at most once (selectinload runs
+    # a separate, unlocked query for the user, so no "FOR UPDATE on outer join" problem).
     token_hash = hash_token(refresh_token_str)
     result = await db.execute(
-        select(RefreshToken).options(selectinload(RefreshToken.user)).where(RefreshToken.token_hash == token_hash)
+        select(RefreshToken)
+        .options(selectinload(RefreshToken.user))
+        .where(RefreshToken.token_hash == token_hash)
+        .with_for_update()
     )
     stored = result.scalar_one_or_none()
 
-    if not stored or stored.is_revoked:
-        # Potential token reuse attack - revoke all tokens for this user
-        if stored:
-            await _revoke_all_user_tokens(stored.user_id, db)
+    # Unknown/forged token (hash not in DB): hard 401, no grace, no revoke-all.
+    if not stored:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
+
+    if stored.is_revoked:
+        # Rotation grace (RFC 9700 §4.14.2 MAY): when a rotation RESPONSE is lost over a flaky
+        # tunnel the client still holds the old token and replays it -- a network retry, not a
+        # reuse attack. Re-issue the successor ONCE for such a token, but only if it was killed
+        # by a normal rotation, inside the narrow grace window, not already consumed, the account
+        # is active, and no later SLO logout has invalidated the chain. Everything else
+        # (super-window, already-consumed, /logout-revoked, real theft) keeps the original
+        # behavior: treat as reuse and revoke ALL of the user's tokens.
+        if _within_rotation_grace(stored) and not await _logout_after_rotation(stored):
+            stored.grace_consumed = True  # single-use gate (atomic under the row lock above)
+            return await _issue_tokens(stored.user, stored.app_client_id, db)
+        await _revoke_all_user_tokens(stored.user_id, db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
     user = stored.user
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
 
-    # Rotate: revoke old, issue new
+    # Rotate: revoke old (tagged rotated_at so a lost-response replay can be graced), issue new
+    now = datetime.now(UTC)
     stored.is_revoked = True
-    stored.revoked_at = datetime.now(UTC)
+    stored.revoked_at = now
+    stored.rotated_at = now
 
     tokens = await _issue_tokens(user, stored.app_client_id, db)
     return tokens
+
+
+def _within_rotation_grace(stored: RefreshToken) -> bool:
+    """True iff this revoked token looks like a lost-response retry eligible for a one-time
+    re-issue: revoked by a normal rotation (``rotated_at`` set), inside the grace window, not yet
+    consumed, and the account still active. Everything else is treated as reuse. ``grace`` <= 0
+    disables the window entirely (rollback switch)."""
+    if stored.rotated_at is None or stored.grace_consumed or not stored.user.is_active:
+        return False
+    if settings.refresh_reuse_grace_seconds <= 0:
+        return False
+    age = (datetime.now(UTC) - stored.rotated_at).total_seconds()
+    return 0 <= age <= settings.refresh_reuse_grace_seconds
+
+
+async def _logout_after_rotation(stored: RefreshToken) -> bool:
+    """True iff an SLO logout marker exists at/after this token's rotation instant, meaning a
+    fresh successor would silently bypass that logout. Fails open (no logout) on Redis trouble,
+    matching the resource-server denylist philosophy -- the narrow grace window bounds exposure."""
+    if stored.rotated_at is None:
+        return False
+    try:
+        marker = await get_user_revoked_at(str(stored.user_id))
+    except Exception:
+        logger.warning("rotation-grace logout-marker check unavailable (Redis); failing open", exc_info=True)
+        return False
+    return marker is not None and marker >= stored.rotated_at.timestamp()
 
 
 async def revoke_refresh_token(refresh_token_str: str, db: AsyncSession):

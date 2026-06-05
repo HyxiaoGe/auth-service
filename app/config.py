@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "RS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
+    # Rotation grace: a refresh token whose rotation response was lost gets replayed by the
+    # client within this many seconds = a network retry, not a reuse attack. Re-issue its
+    # successor ONCE instead of revoking everything. Narrow on purpose (Auth0 defaults 30s; the
+    # real trigger here is sub-10s tunnel retries). Set 0 to disable (rollback switch) -- reuse
+    # detection then reverts to the original revoke-all behavior.
+    refresh_reuse_grace_seconds: int = 5
 
     # OAuth: Google
     google_client_id: str = ""

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -89,6 +89,13 @@ class RefreshToken(Base):
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set ONLY when a token is revoked by a normal rotation (refresh_access_token). /logout,
+    # explicit revoke, and reuse-attack revoke-all leave it NULL, so the rotation-grace window
+    # can never re-issue a successor for a deliberately-killed token.
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Single-use gate for the rotation-grace window: set True the one time a lost-response
+    # replay is graced, so a second replay (e.g. an attacker) falls through to revoke-all.
+    grace_consumed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="refresh_tokens")

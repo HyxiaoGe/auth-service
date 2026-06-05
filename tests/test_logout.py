@@ -49,7 +49,7 @@ async def test_logout_deletes_session_revokes_tokens_and_clears_cookie(monkeypat
 
     revoked = {}
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         revoked["uid"] = user_id
 
     monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
@@ -72,7 +72,7 @@ async def test_logout_writes_user_access_revocation_marker(monkeypatch):
     uid = uuid.uuid4()
     await redis_util.create_session("s5", {"user_id": str(uid)}, ttl=100)
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         return None
 
     monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
@@ -101,7 +101,7 @@ async def test_logout_completes_even_when_marker_write_fails(monkeypatch):
     uid = uuid.uuid4()
     await redis_util.create_session("s6", {"user_id": str(uid)}, ttl=100)
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         return None
 
     async def boom_marker(*args, **kwargs):
@@ -120,7 +120,7 @@ async def test_logout_completes_even_when_marker_write_fails(monkeypatch):
 async def test_logout_without_session_is_noop_but_clears_cookie(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         calls["n"] += 1
 
     monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
@@ -136,7 +136,7 @@ async def test_logout_form_post_redirects_to_registered_uri(monkeypatch):
     """The SLO case: a top-level urlencoded form POST must 302 back to a registered uri."""
     await redis_util.create_session("s2", {"user_id": str(uuid.uuid4())}, ttl=100)
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         return None
 
     async def fake_registered(uri, db, client_id=None):
@@ -159,7 +159,7 @@ async def test_logout_json_body_still_redirects_to_registered_uri(monkeypatch):
     """Back-compat: a programmatic JSON body keeps working."""
     await redis_util.create_session("s3", {"user_id": str(uuid.uuid4())}, ttl=100)
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         return None
 
     async def fake_registered(uri, db, client_id=None):
@@ -179,7 +179,7 @@ async def test_logout_json_body_still_redirects_to_registered_uri(monkeypatch):
 async def test_logout_ignores_unregistered_post_logout_uri(monkeypatch):
     await redis_util.create_session("s4", {"user_id": str(uuid.uuid4())}, ttl=100)
 
-    async def fake_revoke(user_id, db):
+    async def fake_revoke(user_id, db, app_client_id=None):
         return None
 
     async def fake_registered(uri, db, client_id=None):

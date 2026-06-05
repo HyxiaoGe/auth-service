@@ -56,13 +56,13 @@ class _FakeDB:
         pass
 
 
-def _stored(*, is_revoked, rotated_at, grace_consumed=False, is_active=True, user_id=None):
+def _stored(*, is_revoked, rotated_at, grace_consumed=False, is_active=True, user_id=None, app_client_id="app_x"):
     uid = user_id or uuid.uuid4()
     return SimpleNamespace(
         is_revoked=is_revoked,
         rotated_at=rotated_at,
         grace_consumed=grace_consumed,
-        app_client_id="app_x",
+        app_client_id=app_client_id,
         user_id=uid,
         user=SimpleNamespace(id=uid, is_active=is_active),
     )
@@ -226,6 +226,19 @@ async def test_reuse_revoke_scoped_to_offending_app(patched):
     assert exc.value.status_code == 401
     assert patched["revoked"] is True
     assert patched["revoked_app"] == "app_x"  # scoped, not the account-wide None
+
+
+async def test_reuse_with_null_app_revokes_account_wide(patched):
+    """A reuse-detected token with no app context (app_client_id is None -- only legacy/clientless
+    issuance; the column is nullable) can't be scoped to an app, so revocation falls back to the
+    safe account-wide sweep. New tokens always carry an app_client_id, so per-app scoping holds for
+    every live session; this just pins the unscopable-None fallback so it stays intentional."""
+    stored = _stored(is_revoked=True, rotated_at=None, app_client_id=None)
+    with pytest.raises(HTTPException) as exc:
+        await _refresh(stored)
+    assert exc.value.status_code == 401
+    assert patched["revoked"] is True
+    assert patched["revoked_app"] is None  # unscopable app -> account-wide fallback, by design
 
 
 class _CapturingDB:

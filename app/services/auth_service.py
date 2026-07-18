@@ -25,6 +25,7 @@ from app.security.jwt_handler import (
 )
 from app.security.password import hash_password, verify_password
 from app.security.revocation import get_user_revoked_at
+from app.utils.redirect_uri import oauth_redirect_uri_allowed
 
 settings = get_settings()
 
@@ -229,6 +230,11 @@ async def revoke_refresh_token(refresh_token_str: str, db: AsyncSession):
 
 async def create_application(payload: AppCreateRequest, db: AsyncSession) -> AppCreateResponse:
     """Register a new client application."""
+    if any(not oauth_redirect_uri_allowed(uri) for uri in payload.redirect_uris):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="redirect_uri must use HTTPS, app://-, or loopback HTTP",
+        )
     client_id = f"app_{secrets.token_hex(16)}"
     client_secret = secrets.token_urlsafe(48)
 

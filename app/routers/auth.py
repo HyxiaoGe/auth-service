@@ -33,6 +33,7 @@ from app.security.revocation import revoke_user_access_tokens
 from app.services import auth_service, email_login_service, email_sender, oauth_service, session_service
 from app.services.email_sender import EmailSender, get_email_sender
 from app.utils.oauth_redirect import oauth_redirect
+from app.utils.redirect_uri import oauth_redirect_origin, oauth_redirect_uri_allowed
 from app.utils.redis import delete_session, get_session
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -51,27 +52,6 @@ async def capabilities():
     )
 
 
-def _form_action_source(redirect_uri: str | None) -> str | None:
-    if not redirect_uri:
-        return None
-    parsed = urlsplit(redirect_uri)
-    if parsed.scheme not in {"https", "http", "app"} or not parsed.netloc:
-        return None
-    if parsed.username is not None or parsed.password is not None:
-        return None
-    if any(char in parsed.netloc for char in "'\"; \t\r\n"):
-        return None
-    if parsed.scheme == "http":
-        host = parsed.hostname
-        if host != "localhost":
-            try:
-                if host is None or not ip_address(host).is_loopback:
-                    return None
-            except ValueError:
-                return None
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
 def _secure_html(response: HTMLResponse, *, form_redirect_uri: str | None = None) -> HTMLResponse:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -81,7 +61,7 @@ def _secure_html(response: HTMLResponse, *, form_redirect_uri: str | None = None
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     form_actions = "'self'"
-    if redirect_source := _form_action_source(form_redirect_uri):
+    if redirect_source := oauth_redirect_origin(form_redirect_uri or ""):
         # Chrome 会把表单提交后的 302 继续视为 form-action；只放行已注册回调的源，
         # 不携带路径或查询参数，也不放宽到任意 HTTPS 站点。
         form_actions = f"{form_actions} {redirect_source}"
@@ -488,6 +468,8 @@ async def _is_registered_redirect(uri: str, db: AsyncSession, client_id: str | N
     uri registered for app B is not accepted when app A logs out); otherwise it may match
     any active app (back-compat for clientless callers).
     """
+    if not oauth_redirect_uri_allowed(uri):
+        return False
     if client_id:
         return await _resolve_authorize_app(client_id, uri, db) is not None
     result = await db.execute(select(Application).where(Application.is_active.is_(True)))
@@ -496,6 +478,8 @@ async def _is_registered_redirect(uri: str, db: AsyncSession, client_id: str | N
 
 async def _resolve_authorize_app(client_id: str, redirect_uri: str, db: AsyncSession) -> Application | None:
     """Return the active Application iff redirect_uri is an exact registered match, else None."""
+    if not oauth_redirect_uri_allowed(redirect_uri):
+        return None
     result = await db.execute(
         select(Application).where(Application.client_id == client_id, Application.is_active.is_(True))
     )

@@ -10,6 +10,7 @@ from app.models import Application, User
 from app.schemas import OAuthTokenExchangeRequest, TokenResponse
 from app.services import auth_service, oauth_service, session_service
 from app.utils.oauth_redirect import oauth_redirect
+from app.utils.redirect_uri import oauth_redirect_uri_allowed
 from app.utils.redis import consume_auth_code
 
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
@@ -24,8 +25,10 @@ logger = logging.getLogger(__name__)
 async def google_login(
     client_id: str = Query(..., description="Your app's client_id"),
     redirect_uri: str = Query(..., description="Frontend callback URL"),
+    db: AsyncSession = Depends(get_db),
 ):
     """Redirect user to Google OAuth consent screen."""
+    await _validate_redirect_uri(client_id, redirect_uri, db)
     state = await oauth_service.create_oauth_state(client_id, redirect_uri)
     url = oauth_service.get_google_auth_url(state)
     return RedirectResponse(url=url)
@@ -88,8 +91,10 @@ async def google_callback(
 async def github_login(
     client_id: str = Query(..., description="Your app's client_id"),
     redirect_uri: str = Query(..., description="Frontend callback URL"),
+    db: AsyncSession = Depends(get_db),
 ):
     """Redirect user to GitHub OAuth consent screen."""
+    await _validate_redirect_uri(client_id, redirect_uri, db)
     state = await oauth_service.create_oauth_state(client_id, redirect_uri)
     url = oauth_service.get_github_auth_url(state)
     return RedirectResponse(url=url)
@@ -213,6 +218,8 @@ async def _redirect_uri_registered(client_id: str, redirect_uri: str, db: AsyncS
     an unregistered (forged-routing) uri quietly falls back to the branded page instead of
     500-ing.
     """
+    if not oauth_redirect_uri_allowed(redirect_uri):
+        return False
     result = await db.execute(
         select(Application).where(Application.client_id == client_id, Application.is_active.is_(True))
     )
@@ -319,6 +326,8 @@ def _enforce_pkce(code_data: dict, code_verifier: str | None) -> None:
 
 async def _validate_redirect_uri(client_id: str, redirect_uri: str, db: AsyncSession):
     """Verify the redirect_uri is registered for the given application."""
+    if not oauth_redirect_uri_allowed(redirect_uri):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Insecure redirect_uri")
     result = await db.execute(
         select(Application).where(Application.client_id == client_id, Application.is_active.is_(True))
     )

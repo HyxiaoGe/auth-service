@@ -51,7 +51,20 @@ async def capabilities():
     )
 
 
-def _secure_html(response: HTMLResponse) -> HTMLResponse:
+def _form_action_source(redirect_uri: str | None) -> str | None:
+    if not redirect_uri:
+        return None
+    parsed = urlsplit(redirect_uri)
+    if parsed.scheme not in {"https", "http", "app"} or not parsed.netloc:
+        return None
+    if parsed.username is not None or parsed.password is not None:
+        return None
+    if any(char in parsed.netloc for char in "'\"; \t\r\n"):
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _secure_html(response: HTMLResponse, *, form_redirect_uri: str | None = None) -> HTMLResponse:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
     # 表单 POST 需要携带真实 Origin 做 CSRF 防护；Fetch 规范会在 no-referrer 下把
@@ -59,8 +72,14 @@ def _secure_html(response: HTMLResponse) -> HTMLResponse:
     response.headers["Referrer-Policy"] = "origin"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    form_actions = "'self'"
+    if redirect_source := _form_action_source(form_redirect_uri):
+        # Chrome 会把表单提交后的 302 继续视为 form-action；只放行已注册回调的源，
+        # 不携带路径或查询参数，也不放宽到任意 HTTPS 站点。
+        form_actions = f"{form_actions} {redirect_source}"
     response.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; "
+        f"form-action {form_actions}; base-uri 'none'; frame-ancestors 'none'"
     )
     return response
 
@@ -69,6 +88,7 @@ def _email_login_page(
     flow_id: str,
     *,
     csrf_token: str = "",
+    form_redirect_uri: str | None = None,
     code_requested: bool = False,
     message: str | None = None,
     status_code: int = 200,
@@ -111,11 +131,16 @@ label{{font-weight:600}}input{{font:inherit;padding:12px;border:1px solid #c7cdd
 button{{font:inherit;font-weight:650;padding:12px;border:0;border-radius:10px;background:#111827;color:white;cursor:pointer}}
 .notice{{background:#f0f7ff;color:#174f82;padding:10px 12px;border-radius:10px}}.secondary{{border-top:1px solid #e5e7eb;padding-top:20px}}
 </style></head><body><main><h1>邮箱验证码登录</h1><p>验证码仅用于本次安全登录。</p>{notice}{form}</main></body></html>"""
-    return _secure_html(HTMLResponse(html, status_code=status_code))
+    return _secure_html(HTMLResponse(html, status_code=status_code), form_redirect_uri=form_redirect_uri)
 
 
-def _email_unavailable_page() -> HTMLResponse:
-    return _email_login_page("", message="邮箱登录暂不可用，请稍后再试。", status_code=503)
+def _email_unavailable_page(*, form_redirect_uri: str | None = None) -> HTMLResponse:
+    return _email_login_page(
+        "",
+        form_redirect_uri=form_redirect_uri,
+        message="邮箱登录暂不可用，请稍后再试。",
+        status_code=503,
+    )
 
 
 def oauth_error(
@@ -261,7 +286,8 @@ async def send_email_code(
     db: AsyncSession = Depends(get_db),
     sender: EmailSender = Depends(get_email_sender),
 ):
-    if await _validated_email_flow(request, flow_id, csrf_token) is None:
+    flow = await _validated_email_flow(request, flow_id, csrf_token)
+    if flow is None:
         expired = await _expired_email_flow_redirect(request, flow_id, csrf_token, db)
         return expired or _email_login_page(flow_id, status_code=403, message="登录请求无效，请重新开始。")
     result = await email_login_service.request_login_code(
@@ -275,11 +301,12 @@ async def send_email_code(
         config=settings,
     )
     if result.unavailable:
-        return _email_unavailable_page()
+        return _email_unavailable_page(form_redirect_uri=flow["redirect_uri"])
     if not result.accepted:
         response = _email_login_page(
             flow_id,
             csrf_token=csrf_token,
+            form_redirect_uri=flow["redirect_uri"],
             message="请求过于频繁，请稍后再试。",
             status_code=429,
         )
@@ -289,6 +316,7 @@ async def send_email_code(
     response = _email_login_page(
         flow_id,
         csrf_token=csrf_token,
+        form_redirect_uri=flow["redirect_uri"],
         code_requested=True,
         message="如果该邮箱已关联有效账号，验证码已经发送。",
     )
@@ -318,6 +346,7 @@ async def verify_email_code(
     if await _resolve_authorize_app(flow["client_id"], flow["redirect_uri"], db) is None:
         return _email_login_page(
             flow_id,
+            form_redirect_uri=flow["redirect_uri"],
             status_code=400,
             message="应用登录配置已变更，请返回应用后重新开始。",
         )
@@ -332,6 +361,7 @@ async def verify_email_code(
         return _email_login_page(
             flow_id,
             csrf_token=csrf_token,
+            form_redirect_uri=flow["redirect_uri"],
             code_requested=True,
             message="验证码无效或已过期。",
             status_code=400,
@@ -543,7 +573,12 @@ async def authorize(
             config=settings,
         )
         if not allowed:
-            response = _email_login_page("", message="请求过于频繁，请稍后再试。", status_code=429)
+            response = _email_login_page(
+                "",
+                form_redirect_uri=redirect_uri,
+                message="请求过于频繁，请稍后再试。",
+                status_code=429,
+            )
             response.headers["Retry-After"] = str(retry_after)
             return response
         started = await email_login_service.create_email_flow(
@@ -554,7 +589,11 @@ async def authorize(
             browser_cookie=request.cookies.get(email_login_service.email_browser_cookie_name(settings)),
             config=settings,
         )
-        response = _email_login_page(started.flow_id, csrf_token=started.csrf_token)
+        response = _email_login_page(
+            started.flow_id,
+            csrf_token=started.csrf_token,
+            form_redirect_uri=redirect_uri,
+        )
         response.set_cookie(
             key=started.cookie_name,
             value=started.cookie_value,

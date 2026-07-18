@@ -212,6 +212,8 @@ async def test_authorize_email_returns_hosted_page_after_all_oauth_validation(va
     assert resp.status_code == 200
     assert resp.media_type == "text/html"
     assert resp.headers["cache-control"] == "no-store"
+    assert "form-action 'self' https://app.example" in resp.headers["content-security-policy"]
+    assert "/cb" not in resp.headers["content-security-policy"]
     assert "__Host-email_browser=" in resp.headers["set-cookie"]
     assert "Max-Age=3600" in resp.headers["set-cookie"]
     assert "SameSite=lax" in resp.headers["set-cookie"]

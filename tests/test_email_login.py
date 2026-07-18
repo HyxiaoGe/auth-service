@@ -1241,17 +1241,29 @@ async def test_disabled_sender_is_fail_closed_before_user_lookup():
 
 
 def test_email_html_has_strict_headers_and_escapes_untrusted_values():
-    response = auth._email_login_page('<script>alert("x")</script>')
+    response = auth._email_login_page(
+        '<script>alert("x")</script>',
+        form_redirect_uri="https://app.example/cb?state=secret",
+    )
 
     assert isinstance(response, HTMLResponse)
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "origin"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "default-src 'none'" in response.headers["content-security-policy"]
-    assert "form-action 'self'" in response.headers["content-security-policy"]
+    assert "form-action 'self' https://app.example" in response.headers["content-security-policy"]
+    assert "/cb" not in response.headers["content-security-policy"]
+    assert "secret" not in response.headers["content-security-policy"]
     body = bytes(response.body).decode()
     assert '<script>alert("x")</script>' not in body
     assert "&lt;script&gt;" in body
+
+
+def test_email_html_never_allows_unsafe_form_redirect_scheme():
+    response = auth._email_login_page("flow", form_redirect_uri="javascript://attacker.example/steal")
+
+    assert "form-action 'self';" in response.headers["content-security-policy"]
+    assert "javascript:" not in response.headers["content-security-policy"]
 
 
 async def test_verify_endpoint_redirects_with_existing_pkce_code_and_starts_email_session(monkeypatch):

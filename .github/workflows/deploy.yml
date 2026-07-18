@@ -5,6 +5,10 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
+# 自托管 Runner 偶发卡在 Actions 缓存分片下载；超时后按缓存未命中继续安装依赖。
+env:
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: "1"
+
 jobs:
   check:
     runs-on: self-hosted

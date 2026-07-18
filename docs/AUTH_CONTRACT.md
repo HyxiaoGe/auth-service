@@ -75,19 +75,127 @@ OAuth 2.0 authorization endpoint, PKCE **mandatory**, `response_type=code` only.
 | `code_challenge_method` | yes | Must be `S256` (plain is rejected). |
 | `state` | rec | Opaque value echoed back unchanged; the consumer's CSRF defense. |
 | `prompt` | opt | `none` (silent probe), `login`, `select_account`. |
-| `provider` | opt | `google` or `github` (used when there is no live session). |
+| `provider` | opt | `google`, `github` or `email` (used when there is no live session). |
 | `nonce`, `scope` | opt | Accepted; see [Notes](#notes--current-limits). |
 
 Outcomes:
 - Live session, `prompt` not `login`/`select_account` → `302 redirect_uri?code=<code>&state=<state>`.
 - `prompt=none`, no session → `302 redirect_uri?error=login_required&error_description=no+active+session&state=<state>`.
-- No session, valid `provider` → `302` to Google/GitHub consent (IdP completes it, then redirects back with `code`).
+- No session, `provider=google|github` → `302` to social consent; `provider=email` → hosted email form.
 - Bad `client_id`/unregistered `redirect_uri` → **`400` JSON** `{error:"invalid_client", error_description}` (never redirects to an unvalidated uri).
 - Bad `response_type` → `400` JSON `{error:"unsupported_response_type"}`.
 - Missing/`!=S256` PKCE → `302 redirect_uri?error=invalid_request&...&state=`.
 
 Errors use `400` JSON **before** `redirect_uri` is validated, and a `302` redirect with
 `?error=&error_description=&state=` **after** it is known-good.
+
+### Headless email OTP — in-app interaction
+
+Web consumers may keep the two-step email interaction inside their own login dialog. This
+is an additive transport over the same authorization-code + PKCE flow; it does not issue
+access or refresh tokens directly. The hosted `GET /auth/authorize?...&provider=email`
+flow remains the fallback.
+
+Check
+`GET /auth/capabilities?client_id=<client>&redirect_uri=<percent-encoded exact callback>`
+first. The additive `email_headless_login` field is `true` only when both query parameters
+are present, the database still contains that active app and exact redirect URI, email
+delivery is ready, the independent headless switch is enabled, and the request `Origin`
+passes every rule below. Calls without both query parameters keep the legacy
+`email_login` field but deliberately return `email_headless_login: false`.
+
+The Origin must be an allowlisted HTTPS or loopback HTTP web origin, exactly equal the
+registered redirect URI's origin, and be **schemeful same-site** with `AUTH_BASE_URL`.
+Sibling subdomains such as `authmail.seanfield.org` and `dev.seanfield.org` are allowed;
+`auth.example.com` and `app.other.com`, different schemes, different IPs, `app://-`, and
+`Origin: null` are rejected. Registrable sites use an offline Public Suffix List including
+private suffixes, so `co.uk` and multi-tenant domains such as `github.io` are not merged
+naively. Packaged Electron clients use the hosted fallback.
+
+All three headless requests use JSON, send `credentials: "include"`, and require an exact
+`Origin`. That origin must both appear in `CORS_ORIGINS` and equal the origin of the exact
+registered `redirect_uri`. CORS is not treated as authentication: send and verify also
+require the HttpOnly browser-binding cookie plus the returned CSRF token in the
+`X-CSRF-Token` header. Responses are `Cache-Control: no-store` and vary by Origin.
+
+#### `POST /auth/email/headless/start`
+
+Request:
+
+```json
+{
+  "client_id": "fusion",
+  "redirect_uri": "https://fusion.example/auth/callback",
+  "response_type": "code",
+  "state": "<32+ character base64url app state>",
+  "code_challenge": "<43 character base64url S256 challenge>",
+  "code_challenge_method": "S256"
+}
+```
+
+The IdP validates the Origin policy, readiness, active app, and exact redirect URI before
+creating any state. PKCE must be the exact 43-character base64url SHA-256 challenge and
+`state` must contain at least 32 base64url characters. Success returns `201`, creates the existing
+HttpOnly/Secure/host-only `SameSite=Lax` browser-binding cookie, and stores all OAuth
+context server-side:
+
+```json
+{ "flow_id": "...", "csrf_token": "...", "expires_in": 600, "code_length": 6 }
+```
+
+#### `POST /auth/email/headless/send`
+
+Header `X-CSRF-Token: <start.csrf_token>`, request:
+
+```json
+{ "flow_id": "...", "email": "person@example.com" }
+```
+
+Existing, inactive and unknown accounts receive the same `202` response shape. The
+destination is derived only from the submitted value, never from account lookup:
+
+```json
+{
+  "accepted": true,
+  "next": "verify",
+  "expires_in": 300,
+  "resend_after": 60,
+  "masked_destination": "p***@example.com"
+}
+```
+
+Delivery runs after the response. A `202` means the request was accepted, not that an
+account exists or SMTP delivery succeeded.
+
+#### `POST /auth/email/headless/verify`
+
+Header `X-CSRF-Token: <start.csrf_token>`, request:
+
+```json
+{ "flow_id": "...", "code": "123456" }
+```
+
+Before consuming the OTP, the IdP revalidates the active app and exact redirect URI.
+Success consumes the OTP once, starts a fresh IdP session with `amr=email_otp`, and returns
+only a PKCE-bound one-time authorization code plus the original state:
+
+```json
+{ "code": "...", "state": "<original app state>", "expires_in": 300 }
+```
+
+The consumer MUST compare `state` with its locally stored value, then exchange `code`
+through `POST /auth/oauth/token` using the original `client_id` and `code_verifier`.
+
+Stable headless error codes include:
+
+| HTTP | `error` | Meaning |
+|------|---------|---------|
+| 400 | `invalid_client` / `invalid_request` | OAuth request or app configuration is invalid. |
+| 400 | `invalid_code` | Verification code is invalid, expired, or exhausted. |
+| 403 | `origin_not_allowed` / `invalid_interaction` | Origin or flow Cookie/CSRF binding failed. |
+| 410 | `interaction_expired` | A trusted recovery record exists; restart the interaction. |
+| 429 | `rate_limited` | Retry after `retry_after` / `Retry-After`. |
+| 503 | `delivery_unavailable` | Headless email login or delivery is unavailable. |
 
 ### `POST /auth/oauth/token` — code → tokens
 

@@ -64,6 +64,12 @@ def normalize_email(email: str) -> str:
     return email.strip().casefold()
 
 
+def mask_email(email: str) -> str:
+    """仅保留本地部分首字符和域名，用于回显用户刚提交的目标。"""
+    local, domain = normalize_email(email).rsplit("@", 1)
+    return f"{local[:1]}***@{domain}"
+
+
 def _mac(value: str, config: Settings) -> str:
     return hmac.new(config.email_code_pepper.encode(), value.encode(), hashlib.sha256).hexdigest()
 

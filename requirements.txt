@@ -26,3 +26,4 @@ pydantic-settings==2.7.0
 
 # Utilities
 python-multipart==0.0.20
+tldextract==5.3.1

@@ -1,5 +1,6 @@
 import asyncio
 from unittest.mock import AsyncMock
+from urllib.parse import urlencode
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -10,6 +11,13 @@ from app.main import app
 from app.routers import auth
 from app.services import email_sender
 from app.services.email_sender import EmailDeliveryError
+
+LOCAL_CALLBACK = "http://localhost:3000/auth/callback"
+
+
+def _capabilities_path(*, client_id: str | None = None, redirect_uri: str | None = None) -> str:
+    query = {key: value for key, value in {"client_id": client_id, "redirect_uri": redirect_uri}.items() if value}
+    return f"/auth/capabilities?{urlencode(query)}" if query else "/auth/capabilities"
 
 
 @pytest.fixture(autouse=True)
@@ -32,11 +40,12 @@ async def _get(
 async def test_auth_capabilities_reports_email_login_false_when_disabled(monkeypatch):
     monkeypatch.setattr(auth, "settings", Settings(email_login_enabled=False))
 
-    response = await _get("/auth/capabilities")
+    response = await _get("/auth/capabilities", headers={"Origin": "http://localhost:3000"})
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
     assert response.headers["cache-control"] == "no-store"
+    assert "Origin" in response.headers["vary"]
 
 
 async def test_auth_capabilities_allows_packaged_electron_origin():
@@ -59,10 +68,10 @@ async def test_auth_capabilities_reports_email_login_false_when_config_incomplet
         ),
     )
 
-    response = await _get("/auth/capabilities")
+    response = await _get("/auth/capabilities", headers={"Origin": "http://localhost:3000"})
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
 
 
 async def test_auth_capabilities_reports_email_login_true_only_when_ready(monkeypatch):
@@ -83,7 +92,188 @@ async def test_auth_capabilities_reports_email_login_true_only_when_ready(monkey
     response = await _get("/auth/capabilities")
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True}
+    assert response.json() == {"email_login": True, "email_headless_login": False}
+
+
+async def test_auth_capabilities_reports_headless_only_when_its_switch_and_email_readiness_are_true(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            auth_base_url="http://localhost:8100",
+            email_login_enabled=True,
+            email_headless_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+        ),
+    )
+    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+
+    response = await _get(
+        _capabilities_path(client_id="fusion", redirect_uri=LOCAL_CALLBACK),
+        headers={"Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email_login": True, "email_headless_login": True}
+    resolve_app.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/auth/capabilities",
+        _capabilities_path(client_id="fusion"),
+        _capabilities_path(redirect_uri=LOCAL_CALLBACK),
+    ],
+)
+async def test_auth_capabilities_requires_both_client_parameters_for_headless(monkeypatch, path):
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            auth_base_url="http://localhost:8100",
+            email_login_enabled=True,
+            email_headless_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+        ),
+    )
+    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+
+    response = await _get(path, headers={"Origin": "http://localhost:3000"})
+
+    assert response.status_code == 200
+    assert response.json() == {"email_login": True, "email_headless_login": False}
+    resolve_app.assert_not_awaited()
+
+
+async def test_auth_capabilities_requires_active_app_and_exact_redirect(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            auth_base_url="http://localhost:8100",
+            email_login_enabled=True,
+            email_headless_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+        ),
+    )
+    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
+    resolve_app = AsyncMock(return_value=None)
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+
+    response = await _get(
+        _capabilities_path(client_id="fusion", redirect_uri=LOCAL_CALLBACK),
+        headers={"Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email_login": True, "email_headless_login": False}
+    resolve_app.assert_awaited_once()
+
+
+async def test_auth_capabilities_rejects_cross_site_even_when_origin_redirect_and_cors_match(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            auth_base_url="https://auth.example.com",
+            cors_origins="https://app.other.com",
+            email_login_enabled=True,
+            email_headless_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+            trusted_proxy_cidrs="127.0.0.1/32",
+        ),
+    )
+    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+    redirect_uri = "https://app.other.com/auth/callback"
+
+    response = await _get(
+        _capabilities_path(client_id="fusion", redirect_uri=redirect_uri),
+        headers={"Origin": "https://app.other.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email_login": True, "email_headless_login": False}
+    resolve_app.assert_not_awaited()
+
+
+async def test_auth_capabilities_allows_same_site_sibling_subdomain(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            auth_base_url="https://authmail.seanfield.org",
+            cors_origins="https://dev.seanfield.org",
+            email_login_enabled=True,
+            email_headless_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@seanfield.org",
+            smtp_smoke_recipient="smtp-smoke@seanfield.org",
+            trusted_proxy_cidrs="127.0.0.1/32",
+        ),
+    )
+    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+    redirect_uri = "https://dev.seanfield.org/auth/callback"
+
+    response = await _get(
+        _capabilities_path(client_id="fusion", redirect_uri=redirect_uri),
+        headers={"Origin": "https://dev.seanfield.org"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email_login": True, "email_headless_login": True}
+    resolve_app.assert_awaited_once()
+
+
+@pytest.mark.parametrize("origin", ["app://-", "null", None])
+async def test_auth_capabilities_keeps_headless_off_for_non_web_origin(monkeypatch, origin):
+    monkeypatch.setattr(
+        auth,
+        "settings",
+        Settings(
+            auth_base_url="http://localhost:8100",
+            email_login_enabled=True,
+            email_headless_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+        ),
+    )
+    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+
+    headers = {"Origin": origin} if origin is not None else None
+    response = await _get(
+        _capabilities_path(client_id="fusion", redirect_uri=LOCAL_CALLBACK),
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"email_login": True, "email_headless_login": False}
+    resolve_app.assert_not_awaited()
 
 
 async def test_email_delivery_health_disabled_is_green_without_verifying_smtp(monkeypatch):
@@ -137,10 +327,10 @@ async def test_email_delivery_success_enables_capability(monkeypatch):
     health = await _get("/health/email-delivery")
     after = await _get("/auth/capabilities")
 
-    assert before.json() == {"email_login": False}
+    assert before.json() == {"email_login": False, "email_headless_login": False}
     assert health.status_code == 200
     assert health.json()["status"] == "ready"
-    assert after.json() == {"email_login": True}
+    assert after.json() == {"email_login": True, "email_headless_login": False}
     assert email_sender.is_smtp_verified() is True
     preflight.assert_awaited_once_with()
 
@@ -168,7 +358,7 @@ async def test_email_delivery_failure_clears_capability(monkeypatch):
 
     assert health.status_code == 503
     assert health.json()["status"] == "not_ready"
-    assert capability.json() == {"email_login": False}
+    assert capability.json() == {"email_login": False, "email_headless_login": False}
     assert email_sender.is_smtp_verified() is False
 
 

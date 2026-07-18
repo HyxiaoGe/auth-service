@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 import uuid
 from html import escape
@@ -18,6 +19,9 @@ from app.config import get_settings
 from app.database import get_db
 from app.models import Application, User, UserPreference
 from app.schemas import (
+    EmailHeadlessSendRequest,
+    EmailHeadlessStartRequest,
+    EmailHeadlessVerifyRequest,
     LoginRequest,
     MessageResponse,
     ProfileUpdateRequest,
@@ -33,6 +37,7 @@ from app.security.revocation import revoke_user_access_tokens
 from app.services import auth_service, email_login_service, email_sender, oauth_service, session_service
 from app.services.email_sender import EmailSender, get_email_sender
 from app.utils.oauth_redirect import oauth_redirect
+from app.utils.origin import schemeful_web_origin_same_site
 from app.utils.redirect_uri import oauth_redirect_origin, oauth_redirect_uri_allowed
 from app.utils.redis import delete_session, get_session
 
@@ -42,13 +47,35 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+_HEADLESS_S256_CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")
+_HEADLESS_STATE = re.compile(r"[A-Za-z0-9_-]{32,2048}")
+
 
 @router.get("/capabilities")
-async def capabilities():
+async def capabilities(
+    request: Request,
+    client_id: str | None = None,
+    redirect_uri: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
     """公开返回可安全展示的认证能力，不暴露 SMTP 等内部配置。"""
+    email_login_available = email_sender.is_email_login_available(settings)
+    headless_login_available = False
+    if (
+        client_id
+        and redirect_uri
+        and settings.email_headless_login_enabled
+        and email_login_available
+        and _headless_origin_matches(request, redirect_uri)
+        and await _resolve_authorize_app(client_id, redirect_uri, db) is not None
+    ):
+        headless_login_available = True
     return JSONResponse(
-        content={"email_login": email_sender.is_email_login_available(settings)},
-        headers={"Cache-Control": "no-store"},
+        content={
+            "email_login": email_login_available,
+            "email_headless_login": headless_login_available,
+        },
+        headers={"Cache-Control": "no-store", "Vary": "Origin"},
     )
 
 
@@ -263,6 +290,312 @@ async def _expired_email_flow_redirect(
         recovery["redirect_uri"],
         recovery.get("app_state"),
     )
+
+
+def _headless_json(
+    content: dict,
+    *,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+    background: BackgroundTask | None = None,
+) -> JSONResponse:
+    response = JSONResponse(content=content, status_code=status_code, headers=headers, background=background)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Vary"] = "Origin"
+    return response
+
+
+def _headless_error(
+    error: str,
+    error_description: str,
+    *,
+    status_code: int,
+    state: str | None = None,
+    retry_after: int = 0,
+) -> JSONResponse:
+    content: dict[str, str | int] = {"error": error, "error_description": error_description}
+    if state is not None:
+        content["state"] = state
+    headers = None
+    if retry_after:
+        content["retry_after"] = retry_after
+        headers = {"Retry-After": str(retry_after)}
+    return _headless_json(content, status_code=status_code, headers=headers)
+
+
+def _headless_origin_matches(request: Request, redirect_uri: str) -> bool:
+    origin = request.headers.get("origin")
+    return bool(
+        origin
+        and origin != "null"
+        and _headless_web_origin_allowed(origin)
+        and schemeful_web_origin_same_site(settings.auth_base_url, origin)
+        and origin in settings.cors_origin_list
+        and origin == oauth_redirect_origin(redirect_uri)
+    )
+
+
+def _headless_web_origin_allowed(origin: str | None) -> bool:
+    if not origin or origin == "null":
+        return False
+    parsed = urlsplit(origin)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return oauth_redirect_uri_allowed(origin) and oauth_redirect_origin(origin) == origin
+
+
+async def _validated_headless_email_flow(request: Request, flow_id: str) -> dict | None:
+    origin = request.headers.get("origin")
+    if not _headless_web_origin_allowed(origin) or origin not in settings.cors_origin_list:
+        logger.warning("email_login.headless_validation_failed reason=origin_not_allowed")
+        return None
+    browser_cookie = _email_browser_cookie(request)
+    if not browser_cookie:
+        logger.warning("email_login.headless_validation_failed reason=browser_cookie_missing")
+        return None
+    flow = await email_login_service.get_bound_email_flow(flow_id, browser_cookie, config=settings)
+    if flow is None:
+        logger.warning("email_login.headless_validation_failed reason=flow_binding_mismatch")
+        return None
+    if not _headless_origin_matches(request, flow["redirect_uri"]):
+        logger.warning("email_login.headless_validation_failed reason=origin_mismatch")
+        return None
+    if not email_login_service.email_flow_csrf_matches(flow, request.headers.get("x-csrf-token"), settings):
+        logger.warning("email_login.headless_validation_failed reason=csrf_mismatch")
+        return None
+    return flow
+
+
+async def _expired_headless_email_flow_response(
+    request: Request,
+    flow_id: str,
+    db: AsyncSession,
+) -> JSONResponse | None:
+    origin = request.headers.get("origin")
+    if not _headless_web_origin_allowed(origin) or origin not in settings.cors_origin_list:
+        return None
+    recovery = await email_login_service.get_bound_email_flow_recovery(
+        flow_id,
+        _email_browser_cookie(request),
+        request.headers.get("x-csrf-token"),
+        config=settings,
+    )
+    if recovery is None or not _headless_origin_matches(request, recovery["redirect_uri"]):
+        return None
+    if await _resolve_authorize_app(recovery["client_id"], recovery["redirect_uri"], db) is None:
+        return None
+    return _headless_error(
+        "interaction_expired",
+        "email login flow expired, please sign in again",
+        status_code=410,
+        state=recovery.get("app_state"),
+    )
+
+
+@router.post("/email/headless/start")
+async def start_email_headless(
+    request: Request,
+    payload: EmailHeadlessStartRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.response_type != "code":
+        return _headless_error(
+            "unsupported_response_type",
+            "only response_type=code is supported",
+            status_code=400,
+        )
+    valid_state = _HEADLESS_STATE.fullmatch(payload.state) is not None
+    if (
+        payload.code_challenge_method != "S256"
+        or _HEADLESS_S256_CHALLENGE.fullmatch(payload.code_challenge) is None
+        or not valid_state
+    ):
+        return _headless_error(
+            "invalid_request",
+            "PKCE S256 challenge and a 32+ character URL-safe state are required",
+            status_code=400,
+            state=payload.state if valid_state else None,
+        )
+    if not _headless_origin_matches(request, payload.redirect_uri):
+        return _headless_error(
+            "origin_not_allowed",
+            "request origin is not allowed for this redirect_uri",
+            status_code=403,
+        )
+    if not settings.email_headless_login_enabled or not email_sender.is_email_login_available(settings):
+        return _headless_error(
+            "delivery_unavailable",
+            "headless email login is unavailable",
+            status_code=503,
+        )
+    if await _resolve_authorize_app(payload.client_id, payload.redirect_uri, db) is None:
+        return _headless_error(
+            "invalid_client",
+            "unknown client_id or unregistered redirect_uri",
+            status_code=400,
+        )
+
+    allowed, retry_after = await email_login_service.acquire_email_flow_creation_slot(
+        payload.client_id,
+        _email_client_ip(request),
+        config=settings,
+    )
+    if not allowed:
+        return _headless_error(
+            "rate_limited",
+            "too many email login requests",
+            status_code=429,
+            retry_after=retry_after,
+        )
+    started = await email_login_service.create_email_flow(
+        client_id=payload.client_id,
+        redirect_uri=payload.redirect_uri,
+        app_state=payload.state,
+        code_challenge=payload.code_challenge,
+        browser_cookie=request.cookies.get(email_login_service.email_browser_cookie_name(settings)),
+        config=settings,
+    )
+    response = _headless_json(
+        {
+            "flow_id": started.flow_id,
+            "csrf_token": started.csrf_token,
+            "expires_in": settings.email_flow_ttl_seconds,
+            "code_length": 6,
+        },
+        status_code=201,
+    )
+    response.set_cookie(
+        key=started.cookie_name,
+        value=started.cookie_value,
+        max_age=settings.email_flow_recovery_ttl_seconds,
+        path="/",
+        domain=settings.session_cookie_domain,
+        secure=settings.session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@router.post("/email/headless/send")
+async def send_email_headless(
+    request: Request,
+    payload: EmailHeadlessSendRequest,
+    db: AsyncSession = Depends(get_db),
+    sender: EmailSender = Depends(get_email_sender),
+):
+    flow = await _validated_headless_email_flow(request, payload.flow_id)
+    if flow is None:
+        expired = await _expired_headless_email_flow_response(request, payload.flow_id, db)
+        return expired or _headless_error(
+            "invalid_interaction",
+            "email login interaction is invalid",
+            status_code=403,
+        )
+    if not settings.email_headless_login_enabled:
+        return _headless_error(
+            "delivery_unavailable",
+            "headless email login is unavailable",
+            status_code=503,
+        )
+    result = await email_login_service.request_login_code(
+        flow_id=payload.flow_id,
+        flow_cookie=_email_browser_cookie(request),
+        email=str(payload.email),
+        client_ip=_email_client_ip(request),
+        db=db,
+        sender=sender,
+        defer_delivery=True,
+        config=settings,
+    )
+    if result.unavailable:
+        return _headless_error(
+            "delivery_unavailable",
+            "email delivery is unavailable",
+            status_code=503,
+        )
+    if not result.accepted:
+        return _headless_error(
+            "rate_limited",
+            "too many verification code requests",
+            status_code=429,
+            retry_after=result.retry_after,
+        )
+    background = None
+    if result.delivery is not None:
+        background = BackgroundTask(email_login_service.complete_login_code_delivery, result.delivery, sender)
+    return _headless_json(
+        {
+            "accepted": True,
+            "next": "verify",
+            "expires_in": settings.email_code_ttl_seconds,
+            "resend_after": settings.email_code_resend_seconds,
+            "masked_destination": email_login_service.mask_email(str(payload.email)),
+        },
+        status_code=202,
+        background=background,
+    )
+
+
+@router.post("/email/headless/verify")
+async def verify_email_headless(
+    request: Request,
+    payload: EmailHeadlessVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    flow = await _validated_headless_email_flow(request, payload.flow_id)
+    if flow is None:
+        expired = await _expired_headless_email_flow_response(request, payload.flow_id, db)
+        return expired or _headless_error(
+            "invalid_interaction",
+            "email login interaction is invalid",
+            status_code=403,
+        )
+    if not settings.email_headless_login_enabled or not settings.email_login_enabled:
+        return _headless_error(
+            "delivery_unavailable",
+            "headless email login is unavailable",
+            status_code=503,
+        )
+    if await _resolve_authorize_app(flow["client_id"], flow["redirect_uri"], db) is None:
+        return _headless_error(
+            "invalid_client",
+            "application login configuration changed",
+            status_code=400,
+        )
+    verified = await email_login_service.verify_login_code(
+        flow_id=payload.flow_id,
+        flow_cookie=_email_browser_cookie(request),
+        code=payload.code,
+        db=db,
+        config=settings,
+    )
+    if verified is None:
+        return _headless_error(
+            "invalid_code",
+            "verification code is invalid or expired",
+            status_code=400,
+        )
+
+    flow = verified.flow
+    auth_code = await oauth_service.mint_auth_code(
+        user_id=str(verified.user.id),
+        client_id=flow["client_id"],
+        redirect_uri=flow["redirect_uri"],
+        provider="email_otp",
+        code_challenge=flow["code_challenge"],
+    )
+    response = _headless_json(
+        {
+            "code": auth_code,
+            "state": flow["app_state"],
+            "expires_in": settings.auth_code_expire_seconds,
+        }
+    )
+    await session_service.start_session(response, str(verified.user.id), ["email_otp"])
+    return response
 
 
 @router.post("/email/send", response_class=HTMLResponse)

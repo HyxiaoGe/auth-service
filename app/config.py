@@ -47,6 +47,8 @@ class Settings(BaseSettings):
 
     # 邮箱验证码登录：所需密钥与发送端配置齐全前保持关闭。
     email_login_enabled: bool = False
+    # Headless JSON 登录独立灰度；关闭时 hosted 邮箱登录继续可用。
+    email_headless_login_enabled: bool = False
     email_code_pepper: str = ""
     email_code_ttl_seconds: int = Field(default=300, gt=0)
     email_flow_ttl_seconds: int = Field(default=600, gt=0)
@@ -90,8 +92,7 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: str = (
-        "http://localhost:3000,http://localhost:3001,http://localhost:5173,"
-        "http://192.168.1.10:3004,app://-"
+        "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://192.168.1.10:3004,app://-"
     )
 
     @property
@@ -119,19 +120,19 @@ class Settings(BaseSettings):
                 self.smtp_starttls
                 or self.smtp_use_ssl
                 or (
-                    self.app_env == "development"
-                    and not self.auth_uses_https
-                    and self.smtp_allow_plaintext_development
+                    self.app_env == "development" and not self.auth_uses_https and self.smtp_allow_plaintext_development
                 )
             )
         )
 
     @property
+    def email_headless_login_ready(self) -> bool:
+        return self.email_headless_login_enabled and self.email_login_ready
+
+    @property
     def trusted_proxy_networks(self) -> tuple:
         return tuple(
-            ip_network(value.strip(), strict=False)
-            for value in self.trusted_proxy_cidrs.split(",")
-            if value.strip()
+            ip_network(value.strip(), strict=False) for value in self.trusted_proxy_cidrs.split(",") if value.strip()
         )
 
     @field_validator("trusted_proxy_cidrs")
@@ -157,11 +158,7 @@ class Settings(BaseSettings):
         if (
             self.email_login_enabled
             and not (self.smtp_starttls or self.smtp_use_ssl)
-            and (
-                self.app_env != "development"
-                or self.auth_uses_https
-                or not self.smtp_allow_plaintext_development
-            )
+            and (self.app_env != "development" or self.auth_uses_https or not self.smtp_allow_plaintext_development)
         ):
             raise ValueError("plaintext SMTP requires an explicit development-only opt-in")
         if self.email_login_enabled and self.auth_uses_https and not self.trusted_proxy_cidrs.strip():

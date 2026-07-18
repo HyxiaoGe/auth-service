@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 # ==================== Auth ====================
 
@@ -51,6 +51,25 @@ class OAuthTokenExchangeRequest(BaseModel):
     # PKCE (RFC 7636): required only when the auth code was minted with a code_challenge
     # (i.e. came through /authorize). Legacy direct-flow codes omit it.
     code_verifier: str | None = None
+
+
+class EmailHeadlessStartRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=255)
+    redirect_uri: str = Field(min_length=1, max_length=2048)
+    response_type: str = Field(min_length=1, max_length=32)
+    state: str = Field(max_length=2048)
+    code_challenge: str = Field(max_length=256)
+    code_challenge_method: str = Field(min_length=1, max_length=16)
+
+
+class EmailHeadlessSendRequest(BaseModel):
+    flow_id: str = Field(min_length=16, max_length=128)
+    email: EmailStr
+
+
+class EmailHeadlessVerifyRequest(BaseModel):
+    flow_id: str = Field(min_length=16, max_length=128)
+    code: str = Field(pattern=r"^[0-9]{6}$")
 
 
 # ==================== User ====================

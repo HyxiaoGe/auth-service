@@ -41,6 +41,7 @@ def test_https_with_explicit_cookie_domain_cannot_use_host_prefix():
 
 def test_email_login_is_disabled_until_all_security_and_smtp_config_is_present():
     assert Settings().email_login_ready is False
+    assert Settings().email_headless_login_ready is False
     assert (
         Settings(
             email_login_enabled=True,
@@ -51,6 +52,22 @@ def test_email_login_is_disabled_until_all_security_and_smtp_config_is_present()
         ).email_login_ready
         is True
     )
+
+
+def test_headless_email_login_has_an_independent_default_off_switch():
+    ready = Settings(
+        auth_base_url="http://localhost:8100",
+        email_login_enabled=True,
+        email_code_pepper="x" * 32,
+        smtp_host="smtp.example.com",
+        smtp_from_email="login@example.com",
+        smtp_smoke_recipient="smtp-smoke@example.com",
+    )
+    enabled = ready.model_copy(update={"email_headless_login_enabled": True})
+
+    assert ready.email_login_ready is True
+    assert ready.email_headless_login_ready is False
+    assert enabled.email_headless_login_ready is True
 
 
 def test_email_login_public_https_requires_explicit_trusted_proxy_cidrs():

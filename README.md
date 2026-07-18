@@ -17,7 +17,7 @@
      │   (FastAPI + PostgreSQL)│
      │                         │
      │  • 邮箱密码登录          │
-     │  • Google / GitHub OAuth│
+     │  • 邮箱验证码 / 社交登录 │
      │  • JWT 签发 (RS256)     │
      │  • Token 刷新 / 撤销    │
      │  • 多应用管理            │
@@ -111,6 +111,10 @@ configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth
 | POST | /auth/register | 邮箱密码注册 |
 | POST | /auth/login | 邮箱密码登录 |
 | GET  | /auth/authorize | SSO 授权端点 (PKCE S256；`prompt=none` 静默登录) |
+| GET  | /auth/capabilities | 当前 Origin 与指定 app 可用的认证能力；headless 需带 `client_id`、`redirect_uri` |
+| POST | /auth/email/headless/start | 创建弹窗邮箱验证码授权事务 |
+| POST | /auth/email/headless/send | 发送邮箱验证码（JSON） |
+| POST | /auth/email/headless/verify | 验证邮箱验证码并返回一次性授权码 |
 | POST | /auth/oauth/token | 授权码换 token (PKCE) |
 | GET  | /auth/oauth/google | Google OAuth 跳转 |
 | GET  | /auth/oauth/google/callback | Google OAuth 回调 |
@@ -124,6 +128,13 @@ configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth
 | GET  | /admin/apps | 查看接入应用列表 |
 | POST | /admin/apps | 注册新应用 |
 | GET  | /admin/login-logs | 查看登录日志 |
+
+邮箱弹窗登录在调用
+`/auth/capabilities?client_id=...&redirect_uri=...` 时才可能返回
+`email_headless_login: true`。服务会重新校验数据库中的 active Application、精确回调地址、
+CORS、回调 Origin 与请求 Origin，并要求该 Web Origin 与 `AUTH_BASE_URL` schemeful
+same-site；无参数调用继续兼容 hosted 邮箱登录能力，但 headless 固定为 `false`。完整契约见
+[docs/AUTH_CONTRACT.md](docs/AUTH_CONTRACT.md#headless-email-otp--in-app-interaction)。
 
 ## 技术栈
 

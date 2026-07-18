@@ -204,13 +204,22 @@ def _email_client_ip(request: Request) -> str:
 
 async def _validated_email_flow(request: Request, flow_id: str, csrf_token: str) -> dict | None:
     if not _trusted_email_origin(request):
+        logger.warning("email_login.flow_validation_failed reason=origin_mismatch")
+        return None
+    browser_cookie = _email_browser_cookie(request)
+    if not browser_cookie:
+        logger.warning("email_login.flow_validation_failed reason=browser_cookie_missing")
         return None
     flow = await email_login_service.get_bound_email_flow(
         flow_id,
-        _email_browser_cookie(request),
+        browser_cookie,
         config=settings,
     )
-    if flow is None or not email_login_service.email_flow_csrf_matches(flow, csrf_token, settings):
+    if flow is None:
+        logger.warning("email_login.flow_validation_failed reason=flow_binding_mismatch")
+        return None
+    if not email_login_service.email_flow_csrf_matches(flow, csrf_token, settings):
+        logger.warning("email_login.flow_validation_failed reason=csrf_mismatch")
         return None
     return flow
 

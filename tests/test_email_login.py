@@ -1387,6 +1387,23 @@ async def test_verify_rejects_wrong_origin_and_csrf_without_consuming_code(monke
     assert success.status_code == 302
 
 
+async def test_email_flow_validation_logs_only_generic_failure_reason(monkeypatch, caplog):
+    config, started = await _flow()
+    monkeypatch.setattr(auth, "settings", config)
+
+    with caplog.at_level("WARNING"):
+        result = await auth._validated_email_flow(
+            _request(origin="https://auth.example.com"),
+            started.flow_id,
+            started.csrf_token,
+        )
+
+    assert result is None
+    assert "email_login.flow_validation_failed reason=browser_cookie_missing" in caplog.text
+    assert started.flow_id not in caplog.text
+    assert started.csrf_token not in caplog.text
+
+
 async def test_completion_revalidates_application_and_never_redirects_to_invalid_uri(monkeypatch):
     config, started = await _flow()
     user = _User("user@example.com")

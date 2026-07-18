@@ -54,7 +54,9 @@ async def capabilities():
 def _secure_html(response: HTMLResponse) -> HTMLResponse:
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
-    response.headers["Referrer-Policy"] = "no-referrer"
+    # 表单 POST 需要携带真实 Origin 做 CSRF 防护；Fetch 规范会在 no-referrer 下把
+    # 非 CORS POST 的 Origin 降为 null。origin 仅发送源，不泄露 /authorize 查询参数。
+    response.headers["Referrer-Policy"] = "origin"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Content-Security-Policy"] = (

@@ -1245,7 +1245,7 @@ def test_email_html_has_strict_headers_and_escapes_untrusted_values():
 
     assert isinstance(response, HTMLResponse)
     assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
+    assert response.headers["referrer-policy"] == "origin"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "default-src 'none'" in response.headers["content-security-policy"]
     assert "form-action 'self'" in response.headers["content-security-policy"]

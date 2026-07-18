@@ -1266,6 +1266,28 @@ def test_email_html_never_allows_unsafe_form_redirect_scheme():
     assert "javascript:" not in response.headers["content-security-policy"]
 
 
+@pytest.mark.parametrize(
+    ("redirect_uri", "expected_source"),
+    [
+        ("http://localhost:3000/auth/callback", "http://localhost:3000"),
+        ("http://127.2.3.4:3000/auth/callback", "http://127.2.3.4:3000"),
+        ("http://[::1]:3000/auth/callback", "http://[::1]:3000"),
+        ("app://-/auth/callback", "app://-"),
+    ],
+)
+def test_email_html_allows_secure_and_loopback_callback_origins(redirect_uri, expected_source):
+    response = auth._email_login_page("flow", form_redirect_uri=redirect_uri)
+
+    assert f"form-action 'self' {expected_source}" in response.headers["content-security-policy"]
+
+
+def test_email_html_rejects_non_loopback_http_callback_origin():
+    response = auth._email_login_page("flow", form_redirect_uri="http://app.example/auth/callback")
+
+    assert "form-action 'self';" in response.headers["content-security-policy"]
+    assert "app.example" not in response.headers["content-security-policy"]
+
+
 async def test_verify_endpoint_redirects_with_existing_pkce_code_and_starts_email_session(monkeypatch):
     config, started = await _flow()
     user = _User("user@example.com")

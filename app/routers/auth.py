@@ -61,6 +61,14 @@ def _form_action_source(redirect_uri: str | None) -> str | None:
         return None
     if any(char in parsed.netloc for char in "'\"; \t\r\n"):
         return None
+    if parsed.scheme == "http":
+        host = parsed.hostname
+        if host != "localhost":
+            try:
+                if host is None or not ip_address(host).is_loopback:
+                    return None
+            except ValueError:
+                return None
     return f"{parsed.scheme}://{parsed.netloc}"
 
 

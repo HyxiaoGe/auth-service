@@ -62,6 +62,27 @@ async def test_logout_deletes_session_revokes_tokens_and_clears_cookie(monkeypat
     assert "Max-Age=0" in resp.headers["set-cookie"]  # cookie cleared
 
 
+async def test_email_otp_sso_session_uses_existing_logout_everywhere_path(monkeypatch):
+    uid = uuid.uuid4()
+    await redis_util.create_session(
+        "email-sso",
+        {"user_id": str(uid), "auth_time": 111, "amr": ["email_otp"]},
+        ttl=100,
+    )
+    revoked = {}
+
+    async def fake_revoke(user_id, db, app_client_id=None):
+        revoked["uid"] = user_id
+
+    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    response = Response()
+    await auth.logout(request=_request(sid="email-sso"), response=response, db=None)
+
+    assert await redis_util.get_session("email-sso") is None
+    assert revoked["uid"] == uid
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
 async def test_logout_writes_user_access_revocation_marker(monkeypatch):
     """SLO completeness: logout must also kill in-flight stateless access tokens.
 

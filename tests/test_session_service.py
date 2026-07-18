@@ -47,6 +47,23 @@ def test_set_session_cookie_prod_is_secure_and_host_prefixed(monkeypatch):
     assert "Domain" not in header  # __Host- forbids a Domain attribute
 
 
+def test_https_dev_upgrades_existing_cookie_in_place_without_renaming(monkeypatch):
+    monkeypatch.setattr(
+        session_service,
+        "settings",
+        Settings(app_env="development", auth_base_url="https://auth.example.com"),
+    )
+    response = Response()
+
+    session_service.set_session_cookie(response, "upgraded")
+
+    header = response.headers["set-cookie"]
+    assert "sso_session=upgraded" in header
+    assert "__Host-sso_session" not in header
+    assert "Secure" in header
+    assert session_service.read_sid(_make_request({"sso_session": "existing"})) == "existing"
+
+
 def test_clear_session_cookie_expires_it():
     resp = Response()
     session_service.clear_session_cookie(resp)

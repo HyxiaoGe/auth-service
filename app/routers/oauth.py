@@ -1,5 +1,4 @@
 import logging
-from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -10,6 +9,7 @@ from app.database import get_db
 from app.models import Application, User
 from app.schemas import OAuthTokenExchangeRequest, TokenResponse
 from app.services import auth_service, oauth_service, session_service
+from app.utils.oauth_redirect import oauth_redirect
 from app.utils.redis import consume_auth_code
 
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
@@ -250,7 +250,7 @@ async def _recover_or_error_page(
                 _client_ip(request),
             )
             params = {"error": "login_required", "error_description": "session expired, please sign in again"}
-            return RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
+            return oauth_redirect(redirect_uri, params)
 
     logger.warning(
         "oauth_state.missing provider=%s reason=not_found state=%s client_ip=%s code=%s",
@@ -354,6 +354,6 @@ async def _social_redirect(user: User, state_data: dict, provider: str) -> Redir
     app_state = state_data.get("app_state")
     if app_state is not None:
         params["state"] = app_state
-    response = RedirectResponse(url=f"{redirect_uri}?{urlencode(params)}", status_code=302)
+    response = oauth_redirect(redirect_uri, params)
     await session_service.start_session(response, str(user.id), [provider])
     return response

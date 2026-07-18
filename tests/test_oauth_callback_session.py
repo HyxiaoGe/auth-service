@@ -7,6 +7,7 @@ real against fakeredis.
 """
 
 import uuid
+from urllib.parse import parse_qs, urlparse
 
 from fastapi.responses import RedirectResponse
 from starlette.requests import Request
@@ -78,3 +79,26 @@ async def test_github_callback_sets_session_cookie_with_github_amr(monkeypatch):
     payload = await redis_util.get_session(sid)
     assert payload["user_id"] == str(uid)
     assert payload["amr"] == ["github"]
+
+
+async def test_social_redirect_preserves_business_query_and_replaces_reserved_values(monkeypatch):
+    uid = uuid.uuid4()
+
+    async def fixed_code(**_kwargs):
+        return "fresh-code"
+
+    monkeypatch.setattr(oauth.oauth_service, "mint_auth_code", fixed_code)
+    response = await oauth._social_redirect(
+        _FakeUser(uid),
+        {
+            "client_id": "c1",
+            "redirect_uri": "https://app.example/cb?tenant=one&code=old&state=old&error=old",
+            "app_state": "fresh-state",
+        },
+        provider="google",
+    )
+
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    assert query == {"tenant": ["one"], "code": ["fresh-code"], "state": ["fresh-state"]}
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"

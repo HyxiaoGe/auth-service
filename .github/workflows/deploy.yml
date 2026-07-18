@@ -12,8 +12,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+
       - name: Architecture check
-        run: python3 scripts/check_architecture.py
+        run: python scripts/check_architecture.py
+
+      - name: Test
+        run: python -m pytest -q
 
       - name: Lint
         run: ~/.local/bin/ruff check .
@@ -34,11 +49,18 @@ jobs:
           git fetch origin
           git reset --hard origin/main
           git clean -fd
-          if git diff HEAD~1 --name-only | grep -qE 'requirements\.txt|Dockerfile|docker-compose'; then
-            docker compose up -d --build
-          else
-            docker compose restart
-          fi
+          docker compose up -d --build
+          for attempt in {1..30}; do
+            if docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/ready', timeout=3); assert response.status == 200; assert json.load(response)['status'] == 'ready'"; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              exit 1
+            fi
+            sleep 2
+          done
+          # 提交一封专用部署预检邮件，仅验证 SMTP 接受；不证明收件箱送达或 SPF/DKIM。
+          docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/email-delivery', timeout=15); assert response.status == 200; assert json.load(response)['status'] in ('disabled', 'ready')"
           docker image prune -f
           docker builder prune --filter "until=72h" -f
 

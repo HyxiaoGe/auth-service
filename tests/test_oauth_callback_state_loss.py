@@ -87,7 +87,10 @@ async def test_google_callback_recovers_lost_state_and_bounces_back(monkeypatch,
         raise ValueError("Invalid or expired OAuth state")
 
     async def fake_recover(_state):
-        return {"client_id": "c1", "redirect_uri": "https://app.example/cb"}
+        return {
+            "client_id": "c1",
+            "redirect_uri": "https://app.example/cb?tenant=one&code=old&state=old",
+        }
 
     async def fake_registered(_client_id, _redirect_uri, _db):
         return True
@@ -107,6 +110,10 @@ async def test_google_callback_recovers_lost_state_and_bounces_back(monkeypatch,
     loc = resp.headers["location"]
     assert loc.startswith("https://app.example/cb?")
     assert "error=login_required" in loc
+    assert "tenant=one" in loc
+    assert "code=old" not in loc
+    assert "state=old" not in loc
+    assert resp.headers["cache-control"] == "no-store"
     # distinct instrumentation: recovered, not missing
     assert "oauth_state.recovered" in caplog.text
     assert "provider=google" in caplog.text

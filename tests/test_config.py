@@ -1,8 +1,7 @@
-"""Session-cookie configuration: dev vs prod gating.
+"""Session Cookie、邮箱登录安全前置与限流配置测试。"""
 
-Cookie name and Secure flag are DERIVED from app_env so production can never be
-misconfigured into an insecure cookie. TTL/SameSite/Domain are plain settings.
-"""
+import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 
@@ -22,9 +21,148 @@ def test_prod_session_cookie_is_host_prefixed_and_secure():
     assert s.session_cookie_secure is True
 
 
+def test_https_auth_base_url_keeps_dev_cookie_name_but_forces_secure():
+    s = Settings(app_env="development", auth_base_url="https://auth.example.com")
+
+    assert s.session_cookie_name == "sso_session"
+    assert s.session_cookie_secure is True
+
+
+def test_https_with_explicit_cookie_domain_cannot_use_host_prefix():
+    s = Settings(
+        app_env="development",
+        auth_base_url="https://auth.example.com",
+        session_cookie_domain=".example.com",
+    )
+
+    assert s.session_cookie_name == "sso_session"
+    assert s.session_cookie_secure is True
+
+
+def test_email_login_is_disabled_until_all_security_and_smtp_config_is_present():
+    assert Settings().email_login_ready is False
+    assert (
+        Settings(
+            email_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+        ).email_login_ready
+        is True
+    )
+
+
+def test_email_login_public_https_requires_explicit_trusted_proxy_cidrs():
+    with pytest.raises(ValidationError, match="trusted_proxy_cidrs"):
+        Settings(
+            auth_base_url="https://auth.example.com",
+            email_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+        )
+
+
+def test_email_login_local_http_allows_empty_trusted_proxy_cidrs():
+    settings = Settings(
+        auth_base_url="http://localhost:8100",
+        email_login_enabled=True,
+        email_code_pepper="x" * 32,
+        smtp_host="smtp.example.com",
+        smtp_from_email="login@example.com",
+        smtp_smoke_recipient="smtp-smoke@example.com",
+    )
+
+    assert settings.trusted_proxy_networks == ()
+    assert settings.email_login_ready is True
+
+
+def test_enabled_email_login_requires_smoke_recipient():
+    with pytest.raises(ValidationError, match="smtp_smoke_recipient"):
+        Settings(
+            auth_base_url="http://localhost:8100",
+            email_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.example.com",
+            smtp_from_email="login@example.com",
+        )
+
+
+def test_email_authorize_limits_default_to_high_water_circuit_breakers():
+    settings = Settings()
+
+    assert settings.email_authorize_rate_limit_per_client == 2000
+    assert settings.email_authorize_rate_limit_global == 10000
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("email_code_ttl_seconds", 0),
+        ("email_flow_ttl_seconds", -1),
+        ("email_flow_recovery_ttl_seconds", 0),
+        ("email_code_resend_seconds", 0),
+        ("email_code_max_attempts", 0),
+        ("email_rate_limit_per_email", 0),
+        ("email_rate_limit_per_ip", 0),
+        ("email_rate_limit_per_flow", 0),
+        ("email_send_rate_limit_global", 0),
+        ("email_authorize_rate_limit_per_ip", 0),
+        ("email_authorize_rate_limit_per_client", 0),
+        ("email_authorize_rate_limit_global", 0),
+        ("email_flow_max_per_browser", 0),
+        ("email_rate_limit_window_seconds", 0),
+        ("smtp_port", 0),
+        ("smtp_port", 65536),
+        ("smtp_timeout_seconds", 0),
+    ],
+)
+def test_email_security_and_smtp_numeric_settings_must_be_positive(field, value):
+    with pytest.raises(ValidationError):
+        Settings(**{field: value})
+
+
 def test_session_ttls_have_sane_defaults():
     s = Settings(app_env="development")
     assert s.session_ttl_seconds == 604800  # 7-day sliding window
     assert s.session_absolute_max_seconds == 2592000  # 30-day hard cap
     # Absolute cap must be >= sliding TTL, else the sliding window is meaningless.
     assert s.session_absolute_max_seconds >= s.session_ttl_seconds
+
+
+def test_enabled_email_login_requires_long_pepper():
+    with pytest.raises(ValidationError, match="at least 32 characters"):
+        Settings(email_login_enabled=True, email_code_pepper="short")
+
+
+def test_email_code_cannot_outlive_its_authorization_flow():
+    with pytest.raises(ValidationError, match="email_code_ttl_seconds"):
+        Settings(email_code_ttl_seconds=601, email_flow_ttl_seconds=600)
+
+
+def test_plaintext_smtp_is_allowed_only_for_explicit_local_development():
+    local = Settings(
+        auth_base_url="http://localhost:8100",
+        email_login_enabled=True,
+        email_code_pepper="x" * 32,
+        smtp_host="smtp.local",
+        smtp_from_email="login@example.com",
+        smtp_smoke_recipient="smtp-smoke@example.com",
+        smtp_starttls=False,
+        smtp_allow_plaintext_development=True,
+    )
+    assert local.email_login_ready is True
+
+    with pytest.raises(ValidationError, match="plaintext SMTP"):
+        Settings(
+            auth_base_url="https://auth.example.com",
+            email_login_enabled=True,
+            email_code_pepper="x" * 32,
+            smtp_host="smtp.local",
+            smtp_from_email="login@example.com",
+            smtp_smoke_recipient="smtp-smoke@example.com",
+            smtp_starttls=False,
+            smtp_allow_plaintext_development=True,
+        )

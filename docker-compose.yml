@@ -2,8 +2,8 @@ services:
   auth:
     build: .
     container_name: auth-service
-    ports:
-      - "8100:8100"
+    expose:
+      - "8100"
     env_file:
       - .env
     volumes:
@@ -15,7 +15,16 @@ services:
     mem_limit: 256m
     networks:
       - nano-banana-network
+      - postgres_default
+      - middleware_default
+      - ai-audio-network
 
 networks:
   nano-banana-network:
+    external: true
+  postgres_default:
+    external: true
+  middleware_default:
+    external: true
+  ai-audio-network:
     external: true

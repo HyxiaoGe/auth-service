@@ -45,7 +45,36 @@ jobs:
 
       - name: Deploy
         run: |
-          cd ~/project/auth-service
+          cd ~/project/auth-service || exit 1
+          previous_sha="$(git rev-parse HEAD)"
+          rollback_env="$(mktemp /tmp/auth-service-env.XXXXXX)"
+          cp .env "$rollback_env"
+          chmod 600 "$rollback_env"
+          rollback() {
+            rollback_status=0
+            echo "::warning::auth-service deployment failed; restoring ${previous_sha}"
+            if ! cp "$rollback_env" .env; then rollback_status=1; fi
+            if ! git reset --hard "$previous_sha"; then rollback_status=1; fi
+            if ! git clean -fd; then rollback_status=1; fi
+            if ! docker compose up -d --build; then rollback_status=1; fi
+            if ! docker exec auth-service python -c "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3); assert response.status == 200"; then
+              rollback_status=1
+            fi
+            return "$rollback_status"
+          }
+          cleanup() {
+            rm -f "$rollback_env"
+          }
+          on_exit() {
+            status=$?
+            trap - EXIT
+            if [ "$status" -ne 0 ] && ! rollback; then
+              echo "::error::auth-service rollback failed"
+            fi
+            cleanup
+            exit "$status"
+          }
+          trap on_exit EXIT
           git fetch origin
           git reset --hard origin/main
           git clean -fd
@@ -61,8 +90,10 @@ jobs:
           done
           # 提交一封专用部署预检邮件，仅验证 SMTP 接受；不证明收件箱送达或 SPF/DKIM。
           docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/email-delivery', timeout=15); assert response.status == 200; assert json.load(response)['status'] in ('disabled', 'ready')"
-          docker image prune -f
-          docker builder prune --filter "until=72h" -f
+          trap - EXIT
+          cleanup
+          docker image prune -f || true
+          docker builder prune --filter "until=72h" -f || true
 
       - name: Push deploy metrics
         if: always()

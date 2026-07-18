@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # 邮箱验证码登录：所需密钥与发送端配置齐全前保持关闭。
     email_login_enabled: bool = False
-    # Headless JSON 登录独立灰度；关闭时 hosted 邮箱登录继续可用。
+    # Headless JSON 登录独立灰度；关闭后不提供邮箱验证码登录入口。
     email_headless_login_enabled: bool = False
     email_code_pepper: str = ""
     email_code_ttl_seconds: int = Field(default=300, gt=0)

@@ -133,7 +133,8 @@ configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth
 `/auth/capabilities?client_id=...&redirect_uri=...` 时才可能返回
 `email_headless_login: true`。服务会重新校验数据库中的 active Application、精确回调地址、
 CORS、回调 Origin 与请求 Origin，并要求该 Web Origin 与 `AUTH_BASE_URL` schemeful
-same-site；无参数调用继续兼容 hosted 邮箱登录能力，但 headless 固定为 `false`。完整契约见
+same-site。兼容字段 `email_login` 固定为 `false`，无完整应用参数时 headless 也固定为
+`false`。完整契约见
 [docs/AUTH_CONTRACT.md](docs/AUTH_CONTRACT.md#headless-email-otp--in-app-interaction)。
 
 ## 技术栈

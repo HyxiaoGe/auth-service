@@ -2,15 +2,11 @@
 
 import asyncio
 import json
-import re
-import time
 import uuid
 from datetime import UTC, datetime, timedelta
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi import Request
-from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.config import Settings
 from app.routers import auth, oauth
@@ -18,7 +14,7 @@ from app.schemas import OAuthTokenExchangeRequest, TokenResponse
 from app.services import auth_service, email_login_service, email_sender, oauth_service
 from app.services.email_sender import DisabledEmailSender, EmailDeliveryError, SMTPEmailSender
 from app.utils import redis as redis_util
-from app.utils.redis import consume_auth_code, delete_email_flow, get_email_flow, get_session
+from app.utils.redis import get_email_flow
 
 CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 VERIFIER = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
@@ -71,18 +67,6 @@ class _FakeSender:
         self.sent.append((recipient, code, ttl_seconds))
         if self.fail:
             raise EmailDeliveryError("provider unavailable")
-
-
-class _DelayedSender(_FakeSender):
-    def __init__(self):
-        super().__init__()
-        self.started = asyncio.Event()
-        self.release = asyncio.Event()
-
-    async def send_login_code(self, recipient, code, ttl_seconds):
-        self.sent.append((recipient, code, ttl_seconds))
-        self.started.set()
-        await self.release.wait()
 
 
 def _settings(**overrides):
@@ -418,40 +402,6 @@ async def test_failed_resend_keeps_previous_delivered_code_valid(fake_redis):
         flow_id=started.flow_id,
         flow_cookie=started.cookie_value,
         code=old_code,
-        db=db,
-        config=config,
-    )
-    assert verified is not None and verified.user.id == user.id
-
-
-async def test_send_endpoint_returns_before_slow_smtp_and_background_makes_code_usable(monkeypatch):
-    config, started = await _flow()
-    user = _User("user@example.com")
-    db = _DB([user])
-    sender = _DelayedSender()
-    monkeypatch.setattr(auth, "settings", config)
-
-    started_at = time.perf_counter()
-    response = await auth.send_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        email=user.email,
-        db=db,
-        sender=sender,
-    )
-
-    assert time.perf_counter() - started_at < 0.1
-    assert sender.sent == []
-    assert response.background is not None
-    background = asyncio.create_task(response.background())
-    await asyncio.wait_for(sender.started.wait(), timeout=0.1)
-    sender.release.set()
-    await background
-    verified = await email_login_service.verify_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        code=sender.sent[0][1],
         db=db,
         config=config,
     )
@@ -1238,308 +1188,6 @@ async def test_disabled_sender_is_fail_closed_before_user_lookup():
     )
     assert result.accepted is False
     assert result.unavailable is True
-
-
-def test_email_html_has_strict_headers_and_escapes_untrusted_values():
-    response = auth._email_login_page(
-        '<script>alert("x")</script>',
-        form_redirect_uri="https://app.example/cb?state=secret",
-    )
-
-    assert isinstance(response, HTMLResponse)
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "origin"
-    assert response.headers["x-content-type-options"] == "nosniff"
-    assert "default-src 'none'" in response.headers["content-security-policy"]
-    assert "form-action 'self' https://app.example" in response.headers["content-security-policy"]
-    assert "/cb" not in response.headers["content-security-policy"]
-    assert "secret" not in response.headers["content-security-policy"]
-    body = bytes(response.body).decode()
-    assert '<script>alert("x")</script>' not in body
-    assert "&lt;script&gt;" in body
-
-
-def test_email_html_never_allows_unsafe_form_redirect_scheme():
-    response = auth._email_login_page("flow", form_redirect_uri="javascript://attacker.example/steal")
-
-    assert "form-action 'self';" in response.headers["content-security-policy"]
-    assert "javascript:" not in response.headers["content-security-policy"]
-
-
-@pytest.mark.parametrize(
-    ("redirect_uri", "expected_source"),
-    [
-        ("http://localhost:3000/auth/callback", "http://localhost:3000"),
-        ("http://127.2.3.4:3000/auth/callback", "http://127.2.3.4:3000"),
-        ("http://[::1]:3000/auth/callback", "http://[::1]:3000"),
-        ("app://-/auth/callback", "app://-"),
-    ],
-)
-def test_email_html_allows_secure_and_loopback_callback_origins(redirect_uri, expected_source):
-    response = auth._email_login_page("flow", form_redirect_uri=redirect_uri)
-
-    assert f"form-action 'self' {expected_source}" in response.headers["content-security-policy"]
-
-
-def test_email_html_rejects_non_loopback_http_callback_origin():
-    response = auth._email_login_page("flow", form_redirect_uri="http://app.example/auth/callback")
-
-    assert "form-action 'self';" in response.headers["content-security-policy"]
-    assert "app.example" not in response.headers["content-security-policy"]
-
-
-async def test_verify_endpoint_redirects_with_existing_pkce_code_and_starts_email_session(monkeypatch):
-    config, started = await _flow()
-    user = _User("user@example.com")
-    sender = _FakeSender()
-    db = _DB([user])
-    await email_login_service.request_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        email=user.email,
-        client_ip="10.0.0.8",
-        db=db,
-        sender=sender,
-        config=config,
-    )
-
-    async def fake_resolve(_client_id, _redirect_uri, _db):
-        return object()
-
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(auth, "_resolve_authorize_app", fake_resolve)
-    response = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-
-    assert isinstance(response, RedirectResponse)
-    query = parse_qs(urlparse(response.headers["location"]).query)
-    assert query["state"] == ["STATE"]
-    code_data = await consume_auth_code(query["code"][0])
-    assert code_data["user_id"] == str(user.id)
-    assert code_data["app_client_id"] == "appA"
-    assert code_data["provider"] == "email_otp"
-    assert code_data["code_challenge"] == CHALLENGE
-    set_cookie_headers = response.headers.getlist("set-cookie")
-    session_cookie = next(value for value in set_cookie_headers if "sso_session=" in value)
-    sid_match = re.search(r"(?:__Host-)?sso_session=([^;]+)", session_cookie)
-    session = await get_session(sid_match.group(1))
-    assert session["user_id"] == str(user.id)
-    assert session["amr"] == ["email_otp"]
-
-
-async def test_verify_endpoint_rejects_existing_code_after_feature_flag_is_disabled(monkeypatch):
-    config, started = await _flow()
-    user = _User("user@example.com")
-    sender = _FakeSender()
-    db = _DB([user])
-    await email_login_service.request_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        email=user.email,
-        client_ip="10.0.0.8",
-        db=db,
-        sender=sender,
-        config=config,
-    )
-
-    async def active_app(_client_id, _redirect_uri, _db):
-        return object()
-
-    monkeypatch.setattr(auth, "_resolve_authorize_app", active_app)
-    monkeypatch.setattr(auth, "settings", _settings(email_login_enabled=False))
-    blocked = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-
-    assert blocked.status_code == 503
-    assert "邮箱登录暂不可用" in bytes(blocked.body).decode()
-
-    monkeypatch.setattr(auth, "settings", config)
-    allowed = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-    assert allowed.status_code == 302
-
-
-async def test_verify_rejects_wrong_origin_and_csrf_without_consuming_code(monkeypatch):
-    config, started = await _flow()
-    user = _User("user@example.com")
-    sender = _FakeSender()
-    db = _DB([user])
-    await email_login_service.request_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        email=user.email,
-        client_ip="10.0.0.8",
-        db=db,
-        sender=sender,
-        config=config,
-    )
-
-    async def fake_resolve(_client_id, _redirect_uri, _db):
-        return object()
-
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(auth, "_resolve_authorize_app", fake_resolve)
-    wrong_origin = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value, origin="https://evil.example"),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-    wrong_csrf = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token="x" * 32,
-        code=sender.sent[0][1],
-        db=db,
-    )
-    success = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-
-    assert wrong_origin.status_code == 403
-    assert wrong_csrf.status_code == 403
-    assert success.status_code == 302
-
-
-async def test_email_flow_validation_logs_only_generic_failure_reason(monkeypatch, caplog):
-    config, started = await _flow()
-    monkeypatch.setattr(auth, "settings", config)
-
-    with caplog.at_level("WARNING"):
-        result = await auth._validated_email_flow(
-            _request(origin="https://auth.example.com"),
-            started.flow_id,
-            started.csrf_token,
-        )
-
-    assert result is None
-    assert "email_login.flow_validation_failed reason=browser_cookie_missing" in caplog.text
-    assert started.flow_id not in caplog.text
-    assert started.csrf_token not in caplog.text
-
-
-async def test_completion_revalidates_application_and_never_redirects_to_invalid_uri(monkeypatch):
-    config, started = await _flow()
-    user = _User("user@example.com")
-    sender = _FakeSender()
-    db = _DB([user])
-    await email_login_service.request_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        email=user.email,
-        client_ip="10.0.0.8",
-        db=db,
-        sender=sender,
-        config=config,
-    )
-
-    async def inactive_app(_client_id, _redirect_uri, _db):
-        return None
-
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(auth, "_resolve_authorize_app", inactive_app)
-    response = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-
-    assert response.status_code == 400
-    assert response.media_type == "text/html"
-    assert "location" not in response.headers
-    assert CALLBACK not in bytes(response.body).decode()
-
-    async def active_app(_client_id, _redirect_uri, _db):
-        return object()
-
-    monkeypatch.setattr(auth, "_resolve_authorize_app", active_app)
-    success = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-    assert success.status_code == 302
-
-
-async def test_success_redirect_preserves_existing_query(monkeypatch):
-    callback = f"{CALLBACK}?tenant=one"
-    config, started = await _flow(redirect_uri=callback)
-    user = _User("user@example.com")
-    sender = _FakeSender()
-    db = _DB([user])
-    await email_login_service.request_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        email=user.email,
-        client_ip="10.0.0.8",
-        db=db,
-        sender=sender,
-        config=config,
-    )
-
-    async def active_app(_client_id, _redirect_uri, _db):
-        return object()
-
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(auth, "_resolve_authorize_app", active_app)
-    response = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code=sender.sent[0][1],
-        db=db,
-    )
-
-    query = parse_qs(urlparse(response.headers["location"]).query)
-    assert query["tenant"] == ["one"]
-    assert query["state"] == ["STATE"]
-    assert "code" in query
-
-
-async def test_expired_flow_returns_to_registered_callback_with_original_state(monkeypatch):
-    config, started = await _flow()
-    await delete_email_flow(started.flow_id)
-
-    async def active_app(_client_id, _redirect_uri, _db):
-        return object()
-
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(auth, "_resolve_authorize_app", active_app)
-    response = await auth.verify_email_code(
-        request=_request(started.cookie_name, started.cookie_value),
-        flow_id=started.flow_id,
-        csrf_token=started.csrf_token,
-        code="123456",
-        db=_DB(),
-    )
-
-    query = parse_qs(urlparse(response.headers["location"]).query)
-    assert query["error"] == ["login_required"]
-    assert query["state"] == ["STATE"]
 
 
 async def test_email_flow_logs_neither_email_nor_code(caplog):

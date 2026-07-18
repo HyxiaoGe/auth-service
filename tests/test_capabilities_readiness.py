@@ -74,7 +74,7 @@ async def test_auth_capabilities_reports_email_login_false_when_config_incomplet
     assert response.json() == {"email_login": False, "email_headless_login": False}
 
 
-async def test_auth_capabilities_reports_email_login_true_only_when_ready(monkeypatch):
+async def test_auth_capabilities_keeps_hosted_email_login_disabled_when_delivery_is_ready(monkeypatch):
     monkeypatch.setattr(
         auth,
         "settings",
@@ -92,7 +92,7 @@ async def test_auth_capabilities_reports_email_login_true_only_when_ready(monkey
     response = await _get("/auth/capabilities")
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
 
 
 async def test_auth_capabilities_reports_headless_only_when_its_switch_and_email_readiness_are_true(monkeypatch):
@@ -119,7 +119,7 @@ async def test_auth_capabilities_reports_headless_only_when_its_switch_and_email
     )
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": True}
+    assert response.json() == {"email_login": False, "email_headless_login": True}
     resolve_app.assert_awaited_once()
 
 
@@ -152,7 +152,7 @@ async def test_auth_capabilities_requires_both_client_parameters_for_headless(mo
     response = await _get(path, headers={"Origin": "http://localhost:3000"})
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
     resolve_app.assert_not_awaited()
 
 
@@ -180,7 +180,7 @@ async def test_auth_capabilities_requires_active_app_and_exact_redirect(monkeypa
     )
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
     resolve_app.assert_awaited_once()
 
 
@@ -211,7 +211,7 @@ async def test_auth_capabilities_rejects_cross_site_even_when_origin_redirect_an
     )
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
     resolve_app.assert_not_awaited()
 
 
@@ -242,7 +242,7 @@ async def test_auth_capabilities_allows_same_site_sibling_subdomain(monkeypatch)
     )
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": True}
+    assert response.json() == {"email_login": False, "email_headless_login": True}
     resolve_app.assert_awaited_once()
 
 
@@ -272,7 +272,7 @@ async def test_auth_capabilities_keeps_headless_off_for_non_web_origin(monkeypat
     )
 
     assert response.status_code == 200
-    assert response.json() == {"email_login": True, "email_headless_login": False}
+    assert response.json() == {"email_login": False, "email_headless_login": False}
     resolve_app.assert_not_awaited()
 
 
@@ -309,7 +309,7 @@ async def test_email_delivery_health_enabled_but_incomplete_is_503(monkeypatch):
     preflight.assert_not_awaited()
 
 
-async def test_email_delivery_success_enables_capability(monkeypatch):
+async def test_email_delivery_success_keeps_hosted_off_and_headless_requires_context(monkeypatch):
     config = Settings(
         auth_base_url="http://localhost:8100",
         email_login_enabled=True,
@@ -330,7 +330,7 @@ async def test_email_delivery_success_enables_capability(monkeypatch):
     assert before.json() == {"email_login": False, "email_headless_login": False}
     assert health.status_code == 200
     assert health.json()["status"] == "ready"
-    assert after.json() == {"email_login": True, "email_headless_login": False}
+    assert after.json() == {"email_login": False, "email_headless_login": False}
     assert email_sender.is_smtp_verified() is True
     preflight.assert_awaited_once_with()
 

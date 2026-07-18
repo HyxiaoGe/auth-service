@@ -75,13 +75,13 @@ OAuth 2.0 authorization endpoint, PKCE **mandatory**, `response_type=code` only.
 | `code_challenge_method` | yes | Must be `S256` (plain is rejected). |
 | `state` | rec | Opaque value echoed back unchanged; the consumer's CSRF defense. |
 | `prompt` | opt | `none` (silent probe), `login`, `select_account`. |
-| `provider` | opt | `google`, `github` or `email` (used when there is no live session). |
+| `provider` | opt | `google` or `github` (used when there is no live session). |
 | `nonce`, `scope` | opt | Accepted; see [Notes](#notes--current-limits). |
 
 Outcomes:
 - Live session, `prompt` not `login`/`select_account` → `302 redirect_uri?code=<code>&state=<state>`.
 - `prompt=none`, no session → `302 redirect_uri?error=login_required&error_description=no+active+session&state=<state>`.
-- No session, `provider=google|github` → `302` to social consent; `provider=email` → hosted email form.
+- No session, `provider=google|github` → `302` to social consent; unsupported providers such as `email` → `302 redirect_uri?error=invalid_request&...&state=`.
 - Bad `client_id`/unregistered `redirect_uri` → **`400` JSON** `{error:"invalid_client", error_description}` (never redirects to an unvalidated uri).
 - Bad `response_type` → `400` JSON `{error:"unsupported_response_type"}`.
 - Missing/`!=S256` PKCE → `302 redirect_uri?error=invalid_request&...&state=`.
@@ -91,18 +91,18 @@ Errors use `400` JSON **before** `redirect_uri` is validated, and a `302` redire
 
 ### Headless email OTP — in-app interaction
 
-Web consumers may keep the two-step email interaction inside their own login dialog. This
-is an additive transport over the same authorization-code + PKCE flow; it does not issue
-access or refresh tokens directly. The hosted `GET /auth/authorize?...&provider=email`
-flow remains the fallback.
+Web consumers keep the two-step email interaction inside their own login dialog. This
+transport uses the same authorization-code + PKCE flow and does not issue access or
+refresh tokens directly. Auth Service no longer provides a hosted email login page.
 
 Check
 `GET /auth/capabilities?client_id=<client>&redirect_uri=<percent-encoded exact callback>`
 first. The additive `email_headless_login` field is `true` only when both query parameters
 are present, the database still contains that active app and exact redirect URI, email
 delivery is ready, the independent headless switch is enabled, and the request `Origin`
-passes every rule below. Calls without both query parameters keep the legacy
-`email_login` field but deliberately return `email_headless_login: false`.
+passes every rule below. The legacy `email_login` field remains in the response for
+schema compatibility but is always `false`; calls without both query parameters return
+`email_headless_login: false`.
 
 The Origin must be an allowlisted HTTPS or loopback HTTP web origin, exactly equal the
 registered redirect URI's origin, and be **schemeful same-site** with `AUTH_BASE_URL`.
@@ -110,7 +110,7 @@ Sibling subdomains such as `authmail.seanfield.org` and `dev.seanfield.org` are 
 `auth.example.com` and `app.other.com`, different schemes, different IPs, `app://-`, and
 `Origin: null` are rejected. Registrable sites use an offline Public Suffix List including
 private suffixes, so `co.uk` and multi-tenant domains such as `github.io` are not merged
-naively. Packaged Electron clients use the hosted fallback.
+naively. Packaged Electron origins are not eligible for this web-only protocol.
 
 All three headless requests use JSON, send `credentials: "include"`, and require an exact
 `Origin`. That origin must both appear in `CORS_ORIGINS` and equal the origin of the exact

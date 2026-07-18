@@ -6,7 +6,6 @@ tests) so these stay pure unit tests over the routing logic.
 """
 
 import json
-import re
 import time
 import uuid
 from urllib.parse import parse_qs, urlparse
@@ -15,10 +14,8 @@ import pytest
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.config import Settings
 from app.routers import auth
-from app.services import email_sender
-from app.utils.redis import consume_auth_code, create_session, get_email_flow
+from app.utils.redis import consume_auth_code, create_session
 
 # RFC 7636 Appendix B vector (challenge corresponds to this verifier).
 CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
@@ -194,99 +191,18 @@ async def test_authorize_interactive_with_provider_goes_to_social(valid_app):
     assert "github.com" in resp.headers["location"]
 
 
-async def test_authorize_email_returns_hosted_page_after_all_oauth_validation(valid_app, monkeypatch):
-    config = Settings(
-        auth_base_url="https://auth.example.com",
-        email_login_enabled=True,
-        email_code_pepper="test-only-pepper-with-32-characters",
-        smtp_host="smtp.example.com",
-        smtp_from_email="login@example.com",
-        smtp_smoke_recipient="smtp-smoke@example.com",
-        trusted_proxy_cidrs="172.25.0.10/32",
-    )
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(email_sender, "_smtp_verified", True)
+async def test_authorize_email_is_rejected_without_html_or_flow(valid_app, fake_redis):
+    response = await _authorize(_request(), provider="email", state="EMAIL_STATE")
 
-    resp = await _authorize(_request(), provider="email", state="EMAIL_STATE")
-
-    assert resp.status_code == 200
-    assert resp.media_type == "text/html"
-    assert resp.headers["cache-control"] == "no-store"
-    assert "form-action 'self' https://app.example" in resp.headers["content-security-policy"]
-    assert "/cb" not in resp.headers["content-security-policy"]
-    assert "__Host-email_browser=" in resp.headers["set-cookie"]
-    assert "Max-Age=3600" in resp.headers["set-cookie"]
-    assert "SameSite=lax" in resp.headers["set-cookie"]
-    body = bytes(resp.body).decode()
-    assert 'action="/auth/email/send"' in body
-    assert 'name="csrf_token"' in body
-    assert CB not in body
-    flow_id = re.search(r'name="flow_id" value="([^"]+)"', body).group(1)
-    stored = await get_email_flow(flow_id)
-    assert stored["client_id"] == "appA"
-    assert stored["redirect_uri"] == CB
-    assert stored["app_state"] == "EMAIL_STATE"
-    assert stored["code_challenge"] == CHALLENGE
-
-
-async def test_authorize_email_disabled_fails_closed_without_creating_flow(valid_app, monkeypatch, fake_redis):
-    monkeypatch.setattr(auth, "settings", Settings(email_login_enabled=False))
-
-    resp = await _authorize(_request(), provider="email")
-
-    assert resp.status_code == 503
-    assert resp.media_type == "text/html"
+    assert isinstance(response, RedirectResponse)
+    assert response.status_code == 302
+    assert response.media_type is None
+    assert "set-cookie" not in response.headers
+    query = _loc_query(response)
+    assert query["error"] == ["invalid_request"]
+    assert query["error_description"] == ["provider must be google or github"]
+    assert query["state"] == ["EMAIL_STATE"]
     assert [key async for key in fake_redis.scan_iter("email_flow:*")] == []
-
-
-async def test_authorize_email_smtp_unverified_fails_closed_without_creating_flow(
-    valid_app,
-    monkeypatch,
-    fake_redis,
-):
-    config = Settings(
-        auth_base_url="https://auth.example.com",
-        email_login_enabled=True,
-        email_code_pepper="test-only-pepper-with-32-characters",
-        smtp_host="smtp.example.com",
-        smtp_from_email="login@example.com",
-        smtp_smoke_recipient="smtp-smoke@example.com",
-        trusted_proxy_cidrs="172.25.0.10/32",
-    )
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(email_sender, "_smtp_verified", False)
-
-    response = await _authorize(_request(), provider="email")
-
-    assert response.status_code == 503
-    assert [key async for key in fake_redis.scan_iter("email_flow:*")] == []
-
-
-async def test_authorize_email_rate_limit_rejects_before_creating_another_flow(
-    valid_app,
-    monkeypatch,
-    fake_redis,
-):
-    config = Settings(
-        auth_base_url="https://auth.example.com",
-        email_login_enabled=True,
-        email_code_pepper="test-only-pepper-with-32-characters",
-        smtp_host="smtp.example.com",
-        smtp_from_email="login@example.com",
-        smtp_smoke_recipient="smtp-smoke@example.com",
-        trusted_proxy_cidrs="172.25.0.10/32",
-        email_authorize_rate_limit_per_client=1,
-    )
-    monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(email_sender, "_smtp_verified", True)
-
-    first = await _authorize(_request(), provider="email")
-    second = await _authorize(_request(), provider="email")
-
-    assert first.status_code == 200
-    assert second.status_code == 429
-    assert second.headers["retry-after"] == str(config.email_rate_limit_window_seconds)
-    assert len([key async for key in fake_redis.scan_iter("email_flow:*")]) == 1
 
 
 async def test_authorize_interactive_without_provider_returns_error(valid_app):

@@ -119,6 +119,22 @@ def _start_payload(**overrides) -> EmailHeadlessStartRequest:
     return EmailHeadlessStartRequest(**values)
 
 
+async def test_hosted_email_form_routes_are_removed():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        send_response = await client.post(
+            "/auth/email/send",
+            data={"flow_id": "f" * 32, "csrf_token": "c" * 32, "email": "user@example.com"},
+        )
+        verify_response = await client.post(
+            "/auth/email/verify",
+            data={"flow_id": "f" * 32, "csrf_token": "c" * 32, "code": "123456"},
+        )
+
+    assert send_response.status_code == 404
+    assert verify_response.status_code == 404
+
+
 async def _active_app(*_args):
     return object()
 
@@ -183,7 +199,7 @@ async def test_headless_start_rejects_missing_mismatched_or_non_cors_origin_befo
     assert [key async for key in fake_redis.scan_iter("email_flow:*")] == []
 
 
-async def test_headless_start_rejects_packaged_electron_and_keeps_it_on_hosted_fallback(monkeypatch):
+async def test_headless_start_rejects_packaged_electron_origin(monkeypatch):
     config = _settings()
     monkeypatch.setattr(auth, "settings", config)
     monkeypatch.setattr(auth, "_resolve_authorize_app", _active_app)

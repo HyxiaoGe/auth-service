@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -29,6 +29,10 @@ class User(Base):
     login_logs: Mapped[list["LoginLog"]] = relationship(back_populates="user")
     preferences: Mapped["UserPreference | None"] = relationship(
         back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+
+    __table_args__ = (
+        Index("uq_users_normalized_email", func.lower(func.btrim(email)), unique=True),
     )
 
 
@@ -68,11 +72,9 @@ class SocialAccount(Base):
     # Relationships
     user: Mapped["User"] = relationship(back_populates="social_accounts")
 
-    # Unique constraint: one provider account per user, one provider_id per provider
     __table_args__ = (
-        # A user can only link one account per provider
-        # A provider account can only be linked to one user
-        {"comment": "unique(provider, provider_id) enforced via unique index"},
+        UniqueConstraint("provider", "provider_id", name="uq_social_accounts_provider_identity"),
+        UniqueConstraint("user_id", "provider", name="uq_social_accounts_user_provider"),
     )
 
 

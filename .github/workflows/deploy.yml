@@ -51,16 +51,24 @@ jobs:
         run: |
           cd ~/project/auth-service || exit 1
           previous_sha="$(git rev-parse HEAD)"
+          migration_failed=0
           rollback_env="$(mktemp /tmp/auth-service-env.XXXXXX)"
           cp .env "$rollback_env"
           chmod 600 "$rollback_env"
-          rollback() {
+          restore_source() {
             rollback_status=0
-            echo "::warning::auth-service deployment failed; restoring ${previous_sha}"
             if ! cp "$rollback_env" .env; then rollback_status=1; fi
             if ! git reset --hard "$previous_sha"; then rollback_status=1; fi
             if ! git clean -fd; then rollback_status=1; fi
-            if ! docker compose up -d --build; then rollback_status=1; fi
+            return "$rollback_status"
+          }
+          rollback() {
+            rollback_status=0
+            echo "::warning::auth-service deployment failed; restoring ${previous_sha}"
+            if ! restore_source; then rollback_status=1; fi
+            # 本次数据库约束向后兼容，回滚应用时不执行 alembic downgrade。
+            if ! docker compose build auth; then rollback_status=1; fi
+            if ! docker compose up -d --no-build auth; then rollback_status=1; fi
             if ! docker exec auth-service python -c "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3); assert response.status == 200"; then
               rollback_status=1
             fi
@@ -72,8 +80,15 @@ jobs:
           on_exit() {
             status=$?
             trap - EXIT
-            if [ "$status" -ne 0 ] && ! rollback; then
-              echo "::error::auth-service rollback failed"
+            if [ "$status" -ne 0 ]; then
+              if [ "$migration_failed" -eq 1 ]; then
+                echo "::warning::数据库迁移失败，保持旧容器继续服务"
+                if ! restore_source; then
+                  echo "::error::auth-service source restore failed"
+                fi
+              elif ! rollback; then
+                echo "::error::auth-service rollback failed"
+              fi
             fi
             cleanup
             exit "$status"
@@ -82,7 +97,14 @@ jobs:
           git fetch origin
           git reset --hard origin/main
           git clean -fd
-          docker compose up -d --build
+          # 先构建新镜像，再迁移，最后切换服务。
+          docker compose build auth
+          if ! docker compose run --rm --no-deps auth alembic upgrade head; then
+            migration_failed=1
+            echo "::error::数据库迁移失败，保持旧容器继续服务"
+            exit 1
+          fi
+          docker compose up -d --no-build auth
           for attempt in {1..30}; do
             if docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/ready', timeout=3); assert response.status == 200; assert json.load(response)['status'] == 'ready'"; then
               break

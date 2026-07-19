@@ -116,8 +116,9 @@ async def _flow(config=None, redirect_uri=CALLBACK, browser_cookie=None, **overr
     return config, started
 
 
-def test_normalize_email_strips_and_casefolds():
+def test_normalize_email_strips_and_uses_database_lower_rule():
     assert email_login_service.normalize_email("  Stored.User@EXAMPLE.COM  ") == "stored.user@example.com"
+    assert email_login_service.normalize_email("Straße@EXAMPLE.COM") == "straße@example.com"
 
 
 def test_smtp_starttls_uses_system_default_certificate_context(monkeypatch):
@@ -310,7 +311,7 @@ async def test_existing_active_user_gets_hmac_stored_code_without_plaintext_or_e
     assert "code_mac" in serialized
 
 
-async def test_unknown_and_inactive_email_have_same_accepted_result_and_send_nothing():
+async def test_unknown_email_is_delivered_but_inactive_email_is_not():
     config, unknown_flow = await _flow()
     sender = _FakeSender()
     unknown = await email_login_service.request_login_code(
@@ -336,7 +337,8 @@ async def test_unknown_and_inactive_email_have_same_accepted_result_and_send_not
 
     assert unknown == inactive
     assert unknown.accepted is True
-    assert sender.sent == []
+    assert len(sender.sent) == 1
+    assert sender.sent[0][0] == "missing@example.com"
 
 
 async def test_delivery_failure_keeps_uncertain_code_verifiable_with_generic_response():

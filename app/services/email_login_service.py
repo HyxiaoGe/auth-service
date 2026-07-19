@@ -7,13 +7,19 @@ import secrets
 from dataclasses import dataclass, field
 from time import time as current_timestamp
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.models import User
 from app.services.email_sender import EmailDeliveryError, EmailSender
+from app.services.identity_service import (
+    InactiveIdentityError,
+    find_active_user_by_id,
+    find_user_by_email,
+    get_or_create_active_user,
+)
 from app.utils import redis as redis_util
+from app.utils.email import normalize_email
 from app.utils.redis import (
     acquire_email_authorize_slot,
     acquire_email_send_slot,
@@ -61,10 +67,6 @@ class EmailCodeDelivery:
 class EmailVerification:
     user: User
     flow: dict
-
-
-def normalize_email(email: str) -> str:
-    return email.strip().casefold()
 
 
 def mask_email(email: str) -> str:
@@ -239,14 +241,6 @@ async def get_bound_email_flow_recovery(
     return recovery
 
 
-async def _find_active_user(normalized_email: str, db: AsyncSession) -> User | None:
-    result = await db.execute(
-        select(User).where(func.lower(User.email) == normalized_email, User.is_active.is_(True)).limit(2)
-    )
-    users = list(result.scalars().all())
-    return users[0] if len(users) == 1 and users[0].is_active else None
-
-
 async def request_login_code(
     *,
     flow_id: str,
@@ -281,19 +275,22 @@ async def request_login_code(
     if not allowed:
         return CodeRequestResult(accepted=False, retry_after=retry_after)
 
-    user = await _find_active_user(normalized, db)
+    user = await find_user_by_email(normalized, db)
     code = f"{secrets.randbelow(1_000_000):06d}"
     payload = {
         "code_mac": _mac(f"code:{flow_id}:{code}", config),
         "attempts": 0,
         "email_digest": email_digest,
-        "user_id": str(user.id) if user else None,
         "expires_at": current_timestamp() + config.email_code_ttl_seconds,
     }
+    if user is None:
+        payload["normalized_email"] = normalized
+    elif user.is_active:
+        payload["user_id"] = str(user.id)
     await stage_email_otp(flow_id, payload, config.email_code_ttl_seconds)
     delivery = EmailCodeDelivery(
         flow_id=flow_id,
-        recipient=user.email if user else None,
+        recipient=(user.email if user and user.is_active else normalized if user is None else None),
         code=code,
         code_mac=payload["code_mac"],
         ttl_seconds=config.email_code_ttl_seconds,
@@ -339,11 +336,22 @@ async def verify_login_code(
         _mac(f"code:{flow_id}:{code}", config),
         config.email_code_max_attempts,
     )
-    if payload is None or not payload.get("user_id"):
+    if payload is None:
         return None
-    result = await db.execute(select(User).where(User.id == payload["user_id"], User.is_active.is_(True)).limit(2))
-    users = list(result.scalars().all())
-    if len(users) != 1 or not users[0].is_active:
+    user = None
+    if payload.get("user_id"):
+        user = await find_active_user_by_id(payload["user_id"], db)
+    elif payload.get("normalized_email"):
+        try:
+            user = await get_or_create_active_user(
+                payload["normalized_email"],
+                name=None,
+                avatar_url=None,
+                db=db,
+            )
+        except InactiveIdentityError:
+            return None
+    if user is None:
         return None
     await delete_email_flow(flow_id)
-    return EmailVerification(user=users[0], flow=flow)
+    return EmailVerification(user=user, flow=flow)

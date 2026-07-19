@@ -189,7 +189,8 @@ async def exchange_google_code(code: str) -> dict:
         userinfo = resp.json()
         return {
             "provider_id": userinfo["id"],
-            "email": userinfo["email"],
+            "email": userinfo.get("email"),
+            "email_verified": bool(userinfo.get("verified_email")),
             "name": userinfo.get("name"),
             "avatar_url": userinfo.get("picture"),
         }
@@ -224,20 +225,33 @@ async def exchange_github_code(code: str) -> dict:
         resp.raise_for_status()
         user = resp.json()
 
-        email = user.get("email")
-        if not email:
-            email_resp = await client.get(
-                "https://api.github.com/user/emails",
-                headers={"Accept": "application/json"},
-            )
-            email_resp.raise_for_status()
-            emails = email_resp.json()
-            primary = next((e for e in emails if e.get("primary")), emails[0] if emails else None)
-            email = primary["email"] if primary else None
+        email_resp = await client.get(
+            "https://api.github.com/user/emails",
+            headers={"Accept": "application/json"},
+        )
+        email_resp.raise_for_status()
+        emails = email_resp.json()
+        primary = next(
+            (
+                item
+                for item in emails
+                if item.get("primary") and item.get("verified") and _github_email_is_linkable(item.get("email"))
+            ),
+            None,
+        )
+        email = primary["email"] if primary else None
 
         return {
             "provider_id": str(user["id"]),
             "email": email,
+            "email_verified": primary is not None,
             "name": user.get("name") or user.get("login"),
             "avatar_url": user.get("avatar_url"),
         }
+
+
+def _github_email_is_linkable(email: str | None) -> bool:
+    if not email or "@" not in email:
+        return False
+    domain = email.rpartition("@")[2].casefold()
+    return not domain.endswith("noreply.github.com")

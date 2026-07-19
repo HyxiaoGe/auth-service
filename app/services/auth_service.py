@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,6 +26,8 @@ from app.security.jwt_handler import (
 )
 from app.security.password import hash_password, verify_password
 from app.security.revocation import get_user_revoked_at
+from app.services.identity_service import find_user_by_email
+from app.utils.email import normalize_email
 from app.utils.redirect_uri import oauth_redirect_uri_allowed
 
 settings = get_settings()
@@ -84,47 +87,105 @@ async def login_user(
 async def social_login(
     provider: str,
     provider_id: str,
-    email: str,
+    email: str | None,
     name: str | None,
     avatar_url: str | None,
     db: AsyncSession,
+    email_verified: bool = False,
 ) -> User:
-    """Handle social OAuth login - find or create user, link social account. Returns User."""
-    # 1. Check if social account already linked
+    """优先信任已绑定 provider_id；首次绑定只接受已验证邮箱并处理唯一约束竞态。"""
+    social = await _find_social_identity(provider, provider_id, db)
+    if social is not None:
+        if not social.user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+        return social.user
+
+    if not email or not email_verified:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provider email is not verified")
+
+    normalized = normalize_email(email)
+    last_error: IntegrityError | None = None
+    for attempt in range(2):
+        user = await find_user_by_email(normalized, db)
+        is_new_user = user is None
+        if user is not None and not user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+        if user is None:
+            user = User(
+                id=uuid.uuid4(),
+                email=normalized,
+                name=name or normalized.split("@", 1)[0],
+                avatar_url=avatar_url,
+                password_hash=None,
+                is_active=True,
+                is_superuser=False,
+            )
+
+        user_id = user.id
+        linked = await _find_user_provider_identity(user_id, provider, db)
+        if linked is not None:
+            if linked.provider_id == provider_id:
+                return user
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A different provider account is already linked",
+            )
+
+        social = SocialAccount(
+            user_id=user_id,
+            provider=provider,
+            provider_id=provider_id,
+            provider_email=normalized,
+            provider_name=name,
+            provider_avatar=avatar_url,
+        )
+        if is_new_user:
+            db.add(user)
+        db.add(social)
+        try:
+            await db.commit()
+        except IntegrityError as error:
+            last_error = error
+            await db.rollback()
+            winner = await _find_social_identity(provider, provider_id, db)
+            if winner is not None:
+                if not winner.user.is_active:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Account is disabled",
+                    ) from error
+                return winner.user
+            if attempt == 0:
+                continue
+            break
+
+        await db.refresh(user)
+        return user
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Social account link conflict",
+    ) from last_error
+
+
+async def _find_social_identity(provider: str, provider_id: str, db: AsyncSession) -> SocialAccount | None:
     result = await db.execute(
         select(SocialAccount)
         .options(selectinload(SocialAccount.user))
         .where(SocialAccount.provider == provider, SocialAccount.provider_id == provider_id)
     )
-    social = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
 
-    if social:
-        user = social.user
-    else:
-        # 2. Check if user exists by email
-        result = await db.execute(select(User).where(User.email == email))
-        user = result.scalar_one_or_none()
 
-        if not user:
-            # 3. Create new user
-            user = User(email=email, name=name, avatar_url=avatar_url)
-            db.add(user)
-            await db.flush()
-
-        # 4. Link social account
-        social = SocialAccount(
-            user_id=user.id,
-            provider=provider,
-            provider_id=provider_id,
-            provider_email=email,
-            provider_name=name,
-            provider_avatar=avatar_url,
-        )
-        db.add(social)
-
-    await db.commit()
-    await db.refresh(user)
-    return user
+async def _find_user_provider_identity(
+    user_id: uuid.UUID,
+    provider: str,
+    db: AsyncSession,
+) -> SocialAccount | None:
+    result = await db.execute(
+        select(SocialAccount).where(SocialAccount.user_id == user_id, SocialAccount.provider == provider)
+    )
+    return result.scalar_one_or_none()
 
 
 # ==================== Token Operations ====================

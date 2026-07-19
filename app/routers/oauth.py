@@ -69,13 +69,11 @@ async def google_callback(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Google OAuth failed: {e}") from e
 
-    if not user_info.get("email"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get email from Google")
-
     user = await auth_service.social_login(
         provider="google",
         provider_id=user_info["provider_id"],
-        email=user_info["email"],
+        email=user_info.get("email"),
+        email_verified=bool(user_info.get("email_verified")),
         name=user_info.get("name"),
         avatar_url=user_info.get("avatar_url"),
         db=db,
@@ -135,13 +133,11 @@ async def github_callback(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"GitHub OAuth failed: {e}") from e
 
-    if not user_info.get("email"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get email from GitHub")
-
     user = await auth_service.social_login(
         provider="github",
         provider_id=user_info["provider_id"],
-        email=user_info["email"],
+        email=user_info.get("email"),
+        email_verified=bool(user_info.get("email_verified")),
         name=user_info.get("name"),
         avatar_url=user_info.get("avatar_url"),
         db=db,

@@ -5,6 +5,7 @@ import json
 import uuid
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import RedirectResponse
@@ -469,7 +470,12 @@ class _OAuthClient:
 
     async def get(self, url, **_kwargs):
         self.requested.append(url)
-        return _Response(self.responses[url])
+        response = self.responses[url]
+        if isinstance(response, BaseException):
+            raise response
+        if hasattr(response, "raise_for_status"):
+            return response
+        return _Response(response)
 
 
 async def test_google_exchange_propagates_verified_email(monkeypatch):
@@ -513,7 +519,7 @@ async def test_github_always_uses_primary_verified_non_noreply_email(monkeypatch
     info = await oauth_service.exchange_github_code("code")
 
     assert client.requested == [user_url, emails_url]
-    assert info["email"] == "Primary@Example.com"
+    assert info["email"] == "primary@example.com"
     assert info["email_verified"] is True
 
 
@@ -539,6 +545,87 @@ async def test_github_marks_noreply_or_missing_trusted_email_as_unverified(monke
 
     assert info["email"] is None
     assert info["email_verified"] is False
+
+
+def _failed_github_response(status_code: int, detail: str) -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        json={"detail": detail},
+        request=httpx.Request("GET", "https://api.github.com/user/emails"),
+    )
+
+
+@pytest.mark.parametrize(
+    "emails_response",
+    [
+        _failed_github_response(403, "secret-403-response"),
+        _failed_github_response(503, "secret-500-response"),
+        httpx.ReadTimeout("secret-timeout-detail"),
+        {"unexpected": "object"},
+        [None, 1, "bad", {"primary": True, "verified": True, "email": ["bad"]}],
+    ],
+)
+async def test_github_email_endpoint_failures_degrade_after_stable_provider_id(
+    monkeypatch,
+    caplog,
+    emails_response,
+):
+    client = _OAuthClient(
+        {
+            "https://api.github.com/user": {"id": 42, "login": "octocat"},
+            "https://api.github.com/user/emails": emails_response,
+        }
+    )
+    monkeypatch.setattr(oauth_service, "create_github_client", lambda: client)
+
+    info = await oauth_service.exchange_github_code("code")
+
+    assert info["provider_id"] == "42"
+    assert info["email"] is None
+    assert info["email_verified"] is False
+    assert "secret-" not in caplog.text
+
+
+async def test_github_degraded_email_still_allows_bound_identity_but_rejects_unbound(monkeypatch):
+    client = _OAuthClient(
+        {
+            "https://api.github.com/user": {"id": 42, "login": "octocat"},
+            "https://api.github.com/user/emails": httpx.ReadTimeout("provider detail"),
+        }
+    )
+    monkeypatch.setattr(oauth_service, "create_github_client", lambda: client)
+    info = await oauth_service.exchange_github_code("code")
+
+    store = _IdentityStore()
+    bound_user = store.seed_user("bound@example.com")
+    store.seed_social(bound_user, "github", info["provider_id"])
+    resolved = await auth_service.social_login(provider="github", db=_IdentitySession(store), **info)
+    assert resolved.id == bound_user.id
+
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.social_login(
+            provider="github",
+            db=_IdentitySession(_IdentityStore()),
+            **info,
+        )
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Provider email is not verified"
+
+
+@pytest.mark.parametrize("email", ["Straße@example.com", "user name@example.com"])
+async def test_unbound_oauth_rejects_noncanonical_email_with_generic_4xx(email):
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.social_login(
+            provider="github",
+            provider_id="new-provider",
+            email=email,
+            email_verified=True,
+            name=None,
+            avatar_url=None,
+            db=_IdentitySession(_IdentityStore()),
+        )
+    assert exc.value.status_code == 400
+    assert exc.value.detail == "Provider email is not verified"
 
 
 @pytest.mark.parametrize(
@@ -597,6 +684,8 @@ async def test_oauth_callback_delegates_missing_email_for_bound_provider_identit
 def test_database_models_and_migration_define_identity_uniqueness():
     user_indexes = {index.name: index for index in User.__table__.indexes}
     assert user_indexes["uq_users_normalized_email"].unique is True
+    user_constraints = {constraint.name for constraint in User.__table__.constraints}
+    assert "ck_users_email_ascii" in user_constraints
 
     social_constraints = {constraint.name for constraint in SocialAccount.__table__.constraints}
     assert "uq_social_accounts_provider_identity" in social_constraints
@@ -605,5 +694,7 @@ def test_database_models_and_migration_define_identity_uniqueness():
     migration = Path(__file__).parents[1] / "alembic/versions/b7c8d9e0f1a2_unify_passwordless_identity.py"
     source = migration.read_text()
     assert "lower(btrim(email))" in source
+    assert "octet_length(email) = char_length(email)" in source
+    assert "ck_users_email_ascii" in source
     assert "uq_social_accounts_provider_identity" in source
     assert "uq_social_accounts_user_provider" in source

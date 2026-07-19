@@ -24,6 +24,17 @@ def test_enabled_password_auth_requires_long_internal_token(internal_token):
         )
 
 
+@pytest.mark.parametrize("internal_token", [f" {'x' * 32}", f"{'x' * 32} "])
+def test_enabled_password_auth_rejects_internal_token_with_outer_whitespace(internal_token):
+    with pytest.raises(ValidationError, match="password_auth_internal_token"):
+        Settings(
+            password_auth_enabled=True,
+            password_auth_internal_token=internal_token,
+            password_auth_email_prefix="fusion-perf+",
+            password_auth_email_domain="seanfield.org",
+        )
+
+
 @pytest.mark.parametrize(
     ("email_prefix", "email_domain"),
     [

@@ -162,6 +162,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_auth_relationships(self):
+        if (
+            self.password_auth_enabled
+            and self.password_auth_internal_token != self.password_auth_internal_token.strip()
+        ):
+            raise ValueError("password_auth_internal_token must not contain leading or trailing whitespace")
         if self.password_auth_enabled and len(self.password_auth_internal_token) < 32:
             raise ValueError("password_auth_internal_token must contain at least 32 characters")
         if self.password_auth_enabled and not self.password_auth_email_prefix:

@@ -1,18 +1,30 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+
+class _AsciiLocalEmailModel(BaseModel):
+    """身份请求不允许需要 SMTPUTF8 的本地部分进入业务层。"""
+
+    @field_validator("email", check_fields=False)
+    @classmethod
+    def require_ascii_local_part(cls, value: EmailStr) -> EmailStr:
+        local_part = str(value).rpartition("@")[0]
+        if not local_part.isascii():
+            raise ValueError("email must use an ASCII local part") from None
+        return value
 
 # ==================== Auth ====================
 
 
-class RegisterRequest(BaseModel):
+class RegisterRequest(_AsciiLocalEmailModel):
     email: EmailStr
     password: str
     name: str | None = None
 
 
-class LoginRequest(BaseModel):
+class LoginRequest(_AsciiLocalEmailModel):
     email: EmailStr
     password: str
     client_id: str | None = None  # which app is the user logging into
@@ -62,7 +74,7 @@ class EmailHeadlessStartRequest(BaseModel):
     code_challenge_method: str = Field(min_length=1, max_length=16)
 
 
-class EmailHeadlessSendRequest(BaseModel):
+class EmailHeadlessSendRequest(_AsciiLocalEmailModel):
     flow_id: str = Field(min_length=16, max_length=128)
     email: EmailStr
 

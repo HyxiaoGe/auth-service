@@ -62,6 +62,20 @@ def test_internal_password_auth_router_rejects_short_token():
         password_auth.create_router("short", INTERNAL_EMAIL_PREFIX, INTERNAL_EMAIL_DOMAIN)
 
 
+@pytest.mark.parametrize(
+    "internal_token",
+    [
+        f" {'x' * 32}",
+        f"{'x' * 32} ",
+        f"\t{'x' * 32}",
+        f"{'x' * 32}\n",
+    ],
+)
+def test_internal_password_auth_router_rejects_token_with_outer_whitespace(internal_token):
+    with pytest.raises(ValueError, match="must not contain leading or trailing whitespace"):
+        password_auth.create_router(internal_token, INTERNAL_EMAIL_PREFIX, INTERNAL_EMAIL_DOMAIN)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/auth/register", "/auth/login"])
 @pytest.mark.parametrize("internal_token", [None, "wrong-token"])
@@ -89,6 +103,122 @@ async def test_internal_password_auth_rejects_missing_or_wrong_token(path, inter
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Not Found"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/auth/register", "/auth/login"])
+@pytest.mark.parametrize("internal_token", [None, "wrong-token"])
+@pytest.mark.parametrize(
+    ("content", "content_type"),
+    [
+        (b'{"email":', "application/json"),
+        (b"not-json", "text/plain"),
+        (b"", "application/json"),
+        (b"x" * (16 * 1024 + 1), "application/json"),
+    ],
+    ids=["malformed-json", "wrong-content-type", "empty-body", "oversized-body"],
+)
+async def test_internal_password_auth_checks_token_before_reading_or_validating_body(
+    path,
+    internal_token,
+    content,
+    content_type,
+    monkeypatch,
+):
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("内部令牌校验失败时不应解析请求体或调用账密服务")
+
+    monkeypatch.setattr(password_auth.auth_service, "register_user", unexpected_call)
+    monkeypatch.setattr(password_auth.auth_service, "login_user", unexpected_call)
+    headers = {"content-type": content_type}
+    if internal_token:
+        headers[password_auth.INTERNAL_AUTH_HEADER] = internal_token
+    transport = httpx.ASGITransport(app=_internal_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(path, headers=headers, content=content)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/auth/register", "/auth/login"])
+async def test_internal_password_auth_does_not_consume_body_before_token_check(path):
+    async def unread_body():
+        raise AssertionError("内部令牌校验前不得消费请求体")
+        yield b""  # pragma: no cover - 将函数保持为异步生成器
+
+    transport = httpx.ASGITransport(app=_internal_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(path, headers={"content-type": "application/json"}, content=unread_body())
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Not Found"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/auth/register", "/auth/login"])
+@pytest.mark.parametrize(
+    ("content", "content_type", "expected_status"),
+    [
+        (b'{"email":', "application/json", 422),
+        (b"not-json", "text/plain", 422),
+        (b"", "application/json", 422),
+        (b"{}", "application/json", 422),
+        (b"x" * (16 * 1024 + 1), "application/json", 413),
+    ],
+    ids=["malformed-json", "wrong-content-type", "empty-body", "invalid-schema", "oversized-body"],
+)
+async def test_internal_password_auth_validates_body_only_after_correct_token(
+    path,
+    content,
+    content_type,
+    expected_status,
+    monkeypatch,
+):
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("无效请求体不应调用账密服务")
+
+    monkeypatch.setattr(password_auth.auth_service, "register_user", unexpected_call)
+    monkeypatch.setattr(password_auth.auth_service, "login_user", unexpected_call)
+    transport = httpx.ASGITransport(app=_internal_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            path,
+            headers={
+                password_auth.INTERNAL_AUTH_HEADER: INTERNAL_TOKEN,
+                "content-type": content_type,
+            },
+            content=content,
+        )
+
+    assert response.status_code == expected_status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/auth/register", "/auth/login"])
+async def test_internal_password_auth_limits_chunked_body_without_content_length(path, monkeypatch):
+    async def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("超大请求体不应调用账密服务")
+
+    async def oversized_chunks():
+        yield b"x" * (8 * 1024)
+        yield b"x" * (8 * 1024 + 1)
+
+    monkeypatch.setattr(password_auth.auth_service, "register_user", unexpected_call)
+    monkeypatch.setattr(password_auth.auth_service, "login_user", unexpected_call)
+    transport = httpx.ASGITransport(app=_internal_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            path,
+            headers={
+                password_auth.INTERNAL_AUTH_HEADER: INTERNAL_TOKEN,
+                "content-type": "application/json",
+            },
+            content=oversized_chunks(),
+        )
+
+    assert response.status_code == 413
 
 
 @pytest.mark.asyncio

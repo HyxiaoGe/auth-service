@@ -7,10 +7,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import Request
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.routers import auth, oauth
-from app.schemas import OAuthTokenExchangeRequest, TokenResponse
+from app.schemas import EmailHeadlessSendRequest, OAuthTokenExchangeRequest, TokenResponse
 from app.services import auth_service, email_login_service, email_sender, oauth_service
 from app.services.email_sender import DisabledEmailSender, EmailDeliveryError, SMTPEmailSender
 from app.utils import redis as redis_util
@@ -118,7 +119,21 @@ async def _flow(config=None, redirect_uri=CALLBACK, browser_cookie=None, **overr
 
 def test_normalize_email_strips_and_uses_database_lower_rule():
     assert email_login_service.normalize_email("  Stored.User@EXAMPLE.COM  ") == "stored.user@example.com"
-    assert email_login_service.normalize_email("Straße@EXAMPLE.COM") == "straße@example.com"
+
+
+def test_normalize_email_converts_unicode_domain_to_ascii_idna():
+    assert email_login_service.normalize_email("User@bücher.example") == "user@xn--bcher-kva.example"
+
+
+@pytest.mark.parametrize("email", ["Straße@example.com", "İ@example.com", "user name@example.com"])
+def test_normalize_email_rejects_local_parts_that_cannot_match_postgres_ascii_rule(email):
+    with pytest.raises(ValueError, match="invalid canonical email"):
+        email_login_service.normalize_email(email)
+
+
+def test_email_request_schema_rejects_non_ascii_local_part_before_service_call():
+    with pytest.raises(ValidationError):
+        EmailHeadlessSendRequest(flow_id="x" * 16, email="Straße@example.com")
 
 
 def test_smtp_starttls_uses_system_default_certificate_context(monkeypatch):

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -32,6 +32,7 @@ class User(Base):
     )
 
     __table_args__ = (
+        CheckConstraint("octet_length(email) = char_length(email)", name="ck_users_email_ascii"),
         Index("uq_users_normalized_email", func.lower(func.btrim(email)), unique=True),
     )
 

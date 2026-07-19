@@ -19,6 +19,11 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     # 现有环境已确认没有规范化邮箱或社交身份重复；约束在升级时再次强制校验。
+    op.create_check_constraint(
+        "ck_users_email_ascii",
+        "users",
+        "octet_length(email) = char_length(email)",
+    )
     op.create_index(
         "uq_users_normalized_email",
         "users",
@@ -41,3 +46,4 @@ def downgrade() -> None:
     op.drop_constraint("uq_social_accounts_user_provider", "social_accounts", type_="unique")
     op.drop_constraint("uq_social_accounts_provider_identity", "social_accounts", type_="unique")
     op.drop_index("uq_users_normalized_email", table_name="users")
+    op.drop_constraint("ck_users_email_ascii", "users", type_="check")

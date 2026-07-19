@@ -40,14 +40,14 @@ logger = logging.getLogger(__name__)
 
 async def register_user(payload: RegisterRequest, db: AsyncSession) -> User:
     """Register a new user with email and password."""
+    normalized = normalize_email(str(payload.email))
     # Check existing
-    result = await db.execute(select(User).where(User.email == payload.email))
-    if result.scalar_one_or_none():
+    if await find_user_by_email(normalized, db):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
 
     user = User(
-        email=payload.email,
-        name=payload.name or payload.email.split("@")[0],
+        email=normalized,
+        name=payload.name or normalized.split("@")[0],
         password_hash=hash_password(payload.password),
     )
     db.add(user)
@@ -65,8 +65,7 @@ async def login_user(
     db: AsyncSession,
 ) -> TokenResponse:
     """Authenticate with email/password and issue tokens."""
-    result = await db.execute(select(User).where(User.email == payload.email))
-    user = result.scalar_one_or_none()
+    user = await find_user_by_email(normalize_email(str(payload.email)), db)
 
     if not user or not user.password_hash or not verify_password(payload.password, user.password_hash):
         # Log failed attempt
@@ -103,7 +102,13 @@ async def social_login(
     if not email or not email_verified:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provider email is not verified")
 
-    normalized = normalize_email(email)
+    try:
+        normalized = normalize_email(email)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provider email is not verified",
+        ) from None
     last_error: IntegrityError | None = None
     for attempt in range(2):
         user = await find_user_by_email(normalized, db)

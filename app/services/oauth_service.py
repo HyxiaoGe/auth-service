@@ -7,6 +7,7 @@ import secrets
 
 from app.config import get_settings
 from app.services.oauth_clients import create_github_client, create_google_client
+from app.utils.email import normalize_email
 from app.utils.redis import get_redis, store_auth_code
 
 settings = get_settings()
@@ -225,33 +226,48 @@ async def exchange_github_code(code: str) -> dict:
         resp.raise_for_status()
         user = resp.json()
 
-        email_resp = await client.get(
-            "https://api.github.com/user/emails",
-            headers={"Accept": "application/json"},
-        )
-        email_resp.raise_for_status()
-        emails = email_resp.json()
-        primary = next(
-            (
-                item
-                for item in emails
-                if item.get("primary") and item.get("verified") and _github_email_is_linkable(item.get("email"))
-            ),
-            None,
-        )
-        email = primary["email"] if primary else None
+        email = await _get_github_primary_verified_email(client)
 
         return {
             "provider_id": str(user["id"]),
             "email": email,
-            "email_verified": primary is not None,
+            "email_verified": email is not None,
             "name": user.get("name") or user.get("login"),
             "avatar_url": user.get("avatar_url"),
         }
 
 
-def _github_email_is_linkable(email: str | None) -> bool:
-    if not email or "@" not in email:
-        return False
-    domain = email.rpartition("@")[2].casefold()
-    return not domain.endswith("noreply.github.com")
+async def _get_github_primary_verified_email(client) -> str | None:
+    """GitHub 邮箱是可降级属性；稳定 provider_id 仍可让已绑定身份登录。"""
+    try:
+        response = await client.get(
+            "https://api.github.com/user/emails",
+            headers={"Accept": "application/json"},
+        )
+        response.raise_for_status()
+        emails = response.json()
+        if not isinstance(emails, list):
+            raise ValueError("unexpected GitHub email response")
+        for item in emails:
+            if not isinstance(item, dict):
+                raise ValueError("unexpected GitHub email item")
+            if item.get("primary") is True and item.get("verified") is True:
+                email = _canonical_github_email(item.get("email"))
+                if email is not None:
+                    return email
+        return None
+    except Exception:
+        # 不记录上游响应或异常详情，避免令牌、邮箱或响应体泄露。
+        logger.warning("github.user_emails_unavailable")
+        return None
+
+
+def _canonical_github_email(email: object) -> str | None:
+    if not isinstance(email, str):
+        return None
+    try:
+        canonical = normalize_email(email)
+    except ValueError:
+        return None
+    domain = canonical.rpartition("@")[2]
+    return None if domain.endswith("noreply.github.com") else canonical

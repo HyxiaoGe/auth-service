@@ -61,7 +61,9 @@ class _Sender:
         self.fail = fail
         self.sent = []
 
-    async def send_login_code(self, recipient: str, code: str, ttl_seconds: int):
+    async def send_login_code(
+        self, recipient: str, code: str, ttl_seconds: int, delivery_id: str | None = None
+    ):
         self.sent.append((recipient, code, ttl_seconds))
         if self.fail:
             raise EmailDeliveryError("delivery failed")

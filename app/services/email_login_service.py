@@ -306,7 +306,12 @@ async def complete_login_code_delivery(delivery: EmailCodeDelivery, sender: Emai
     should_promote = True
     if delivery.recipient:
         try:
-            await sender.send_login_code(delivery.recipient, delivery.code, delivery.ttl_seconds)
+            await sender.send_login_code(
+                delivery.recipient,
+                delivery.code,
+                delivery.ttl_seconds,
+                delivery_id=delivery.flow_id,
+            )
         except EmailDeliveryError:
             # 不记录可与 flow 关联的账号存在性或投递差异；SMTP 全局状态由独立探测恢复。
             should_promote = False

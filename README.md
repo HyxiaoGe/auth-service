@@ -126,6 +126,7 @@ configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth
 | GET  | /admin/apps | 查看接入应用列表 |
 | POST | /admin/apps | 注册新应用 |
 | GET  | /admin/login-logs | 查看登录日志 |
+| GET  | /admin/email-usage | 查看 Resend 脱敏月度用量快照（仅管理员） |
 
 `POST /auth/register` 与 `POST /auth/login` 默认不会注册，也不会出现在 OpenAPI 中。
 仅现有受控内部任务需要兼容时，才可同时配置 `PASSWORD_AUTH_ENABLED=true`、至少 32 字符的
@@ -141,6 +142,13 @@ CORS、回调 Origin 与请求 Origin，并要求该 Web Origin 与 `AUTH_BASE_U
 same-site。兼容字段 `email_login` 固定为 `false`，无完整应用参数时 headless 也固定为
 `false`。完整契约见
 [docs/AUTH_CONTRACT.md](docs/AUTH_CONTRACT.md#headless-email-otp--in-app-interaction)。
+
+邮件默认继续使用 SMTP。只有显式配置 `RESEND_API_KEY` 时才切换到 Resend
+Email API，发件地址、发件名与预检收件人继续使用现有 `SMTP_FROM_EMAIL`、
+`SMTP_FROM_NAME` 和 `SMTP_SMOKE_RECIPIENT`。`RESEND_MONTHLY_QUOTA` 必须是正整数；
+免费计划将 `RESEND_DAILY_QUOTA` 设为正整数，无日限额的付费计划设为 `paid`。
+管理员用量接口只读取成功发送响应头写入 Redis 的数字快照，不会额外请求
+Resend，也不保存 API key、验证码或收件地址。
 
 ## 技术栈
 

@@ -64,7 +64,7 @@ class _FakeSender:
         self.fail = fail
         self.sent = []
 
-    async def send_login_code(self, recipient, code, ttl_seconds):
+    async def send_login_code(self, recipient, code, ttl_seconds, delivery_id=None):
         self.sent.append((recipient, code, ttl_seconds))
         if self.fail:
             raise EmailDeliveryError("provider unavailable")

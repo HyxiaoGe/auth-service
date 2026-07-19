@@ -15,6 +15,42 @@ def test_password_auth_is_disabled_by_default():
     assert settings.password_auth_email_domain == ""
 
 
+def test_trusted_jwks_path_and_issuer_must_be_configured_together():
+    with pytest.raises(ValidationError, match="jwt_trusted"):
+        Settings(jwt_trusted_jwks_path="/tmp/dev-jwks.json")
+    with pytest.raises(ValidationError, match="jwt_trusted"):
+        Settings(jwt_trusted_issuer="https://auth.dev.example")
+
+    settings = Settings(
+        jwt_trusted_jwks_path="/tmp/dev-jwks.json",
+        jwt_trusted_issuer="https://auth.dev.example",
+    )
+    assert settings.jwt_trusted_issuer == "https://auth.dev.example"
+
+    with pytest.raises(ValidationError, match="only allowed in development"):
+        Settings(
+            app_env="production",
+            jwt_trusted_jwks_path="/tmp/dev-jwks.json",
+            jwt_trusted_issuer="https://auth.dev.example",
+        )
+
+
+def test_resend_preflight_cache_is_development_only_and_trimmed():
+    settings = Settings(
+        resend_preflight_cache_path="/tmp/resend-preflight.json",
+        resend_preflight_cache_ttl_seconds=3600,
+    )
+    assert settings.resend_preflight_cache_path == "/tmp/resend-preflight.json"
+
+    with pytest.raises(ValidationError, match="resend_preflight_cache_path"):
+        Settings(resend_preflight_cache_path=" /tmp/resend-preflight.json")
+    with pytest.raises(ValidationError, match="only allowed in development"):
+        Settings(
+            app_env="production",
+            resend_preflight_cache_path="/tmp/resend-preflight.json",
+        )
+
+
 @pytest.mark.parametrize("internal_token", ["", "short"])
 def test_enabled_password_auth_requires_long_internal_token(internal_token):
     with pytest.raises(ValidationError, match="password_auth_internal_token"):

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from ipaddress import ip_network
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -25,6 +26,9 @@ class Settings(BaseSettings):
     jwt_private_key_path: str = "keys/private.pem"
     jwt_public_key_path: str = "keys/public.pem"
     jwt_algorithm: str = "RS256"
+    # 仅用于本地联调：允许 headless auth 验证显式信任 issuer 的已签名 access token。
+    jwt_trusted_jwks_path: str = ""
+    jwt_trusted_issuer: str = ""
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
     # Rotation grace: a refresh token whose rotation response was lost gets replayed by the
@@ -90,6 +94,16 @@ class Settings(BaseSettings):
     smtp_allow_plaintext_development: bool = False
     smtp_timeout_seconds: float = Field(default=10.0, gt=0)
 
+    # 只有显式配置 API key 才从 SMTP 切换到 Resend Email API。发件身份与预检收件人
+    # 继续复用上方已部署的 SMTP_FROM_* / SMTP_SMOKE_RECIPIENT，避免改变现有 SMTP 配置。
+    resend_api_key: str = ""
+    resend_monthly_quota: int = Field(default=3000, gt=0)
+    resend_daily_quota: int | Literal["paid"] = 100
+    resend_timeout_seconds: float = Field(default=10.0, gt=0)
+    # 仅用于 development 热重载：短期复用已通过的真实预检，避免重复消耗额度。
+    resend_preflight_cache_path: str = ""
+    resend_preflight_cache_ttl_seconds: int = Field(default=3600, gt=0, le=86400)
+
     # 只有直连对端命中这些 CIDR 时，才信任其转发的客户端 IP 请求头。
     trusted_proxy_cidrs: str = ""
 
@@ -124,7 +138,14 @@ class Settings(BaseSettings):
         return bool(
             self.email_login_enabled
             and len(self.email_code_pepper) >= 32
-            and self.smtp_host
+            and (self.resend_email_ready if self.resend_api_key else self.smtp_email_ready)
+        )
+
+    @property
+    def smtp_email_ready(self) -> bool:
+        """保留原有 SMTP 安全就绪语义，不受 Resend 配额配置影响。"""
+        return bool(
+            self.smtp_host
             and self.smtp_from_email
             and self.smtp_smoke_recipient
             and not (self.smtp_starttls and self.smtp_use_ssl)
@@ -136,6 +157,10 @@ class Settings(BaseSettings):
                 )
             )
         )
+
+    @property
+    def resend_email_ready(self) -> bool:
+        return bool(self.resend_api_key and self.smtp_from_email and self.smtp_smoke_recipient)
 
     @property
     def email_headless_login_ready(self) -> bool:
@@ -162,6 +187,18 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_auth_relationships(self):
+        if self.jwt_trusted_jwks_path != self.jwt_trusted_jwks_path.strip():
+            raise ValueError("jwt_trusted_jwks_path must not contain outer whitespace")
+        if self.jwt_trusted_issuer != self.jwt_trusted_issuer.strip():
+            raise ValueError("jwt_trusted_issuer must not contain outer whitespace")
+        if bool(self.jwt_trusted_jwks_path) != bool(self.jwt_trusted_issuer):
+            raise ValueError(
+                "jwt_trusted_jwks_path and jwt_trusted_issuer must be configured together"
+            )
+        if self.jwt_trusted_issuer and self.app_env != "development":
+            raise ValueError("jwt_trusted issuer is only allowed in development")
+        if self.jwt_trusted_issuer and urlsplit(self.jwt_trusted_issuer).scheme.lower() != "https":
+            raise ValueError("jwt_trusted_issuer must use https")
         if (
             self.password_auth_enabled
             and self.password_auth_internal_token != self.password_auth_internal_token.strip()
@@ -193,12 +230,23 @@ class Settings(BaseSettings):
             )
         if self.smtp_starttls and self.smtp_use_ssl:
             raise ValueError("smtp_starttls and smtp_use_ssl are mutually exclusive")
+        if self.resend_api_key != self.resend_api_key.strip():
+            raise ValueError("resend_api_key must not contain leading or trailing whitespace")
+        if self.resend_preflight_cache_path != self.resend_preflight_cache_path.strip():
+            raise ValueError(
+                "resend_preflight_cache_path must not contain leading or trailing whitespace"
+            )
+        if self.resend_preflight_cache_path and self.app_env != "development":
+            raise ValueError("resend preflight cache is only allowed in development")
+        if isinstance(self.resend_daily_quota, int) and self.resend_daily_quota <= 0:
+            raise ValueError("resend_daily_quota must be positive or paid")
         if self.email_login_enabled and len(self.email_code_pepper) < 32:
             raise ValueError("email_code_pepper must contain at least 32 characters")
         if self.email_login_enabled and not self.smtp_smoke_recipient.strip():
             raise ValueError("smtp_smoke_recipient is required when email login is enabled")
         if (
             self.email_login_enabled
+            and not self.resend_api_key
             and not (self.smtp_starttls or self.smtp_use_ssl)
             and (self.app_env != "development" or self.auth_uses_https or not self.smtp_allow_plaintext_development)
         ):

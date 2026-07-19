@@ -160,7 +160,7 @@ async def health_ready(request: Request):
 
 @app.get("/health/email-delivery", tags=["Health"])
 async def email_delivery_health(request: Request):
-    """内部 SMTP 投递状态：限时等待后台 monitor 的接收级预检结果。"""
+    """内部邮件投递状态：限时等待后台 monitor 的接收级预检结果。"""
     if not _is_loopback_request(request):
         return _internal_health_forbidden()
     if not settings.email_login_enabled:
@@ -174,8 +174,12 @@ async def email_delivery_health(request: Request):
         )
     # SMTP socket timeout may apply independently to connect、STARTTLS、auth 和 send。
     # health 等待完整阶段预算，避免正常但较慢的首次 monitor 预检被提前误判为失败。
+    provider_timeout_seconds = (
+        settings.resend_timeout_seconds if settings.resend_api_key else settings.smtp_timeout_seconds
+    )
+    provider_phases = 1 if settings.resend_api_key else EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES
     verification_wait_seconds = (
-        settings.smtp_timeout_seconds * EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES
+        provider_timeout_seconds * provider_phases
         + EMAIL_DELIVERY_VERIFICATION_GRACE_SECONDS
     )
     try:
@@ -193,5 +197,7 @@ async def email_delivery_health(request: Request):
     return {
         "status": "ready",
         "service": settings.app_name,
-        "verification": "smtp_accepted_only",
+        "verification": (
+            "resend_api_accepted_only" if settings.resend_api_key else "smtp_accepted_only"
+        ),
     }

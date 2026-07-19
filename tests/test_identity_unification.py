@@ -171,7 +171,9 @@ class _Sender(EmailSender):
     def __init__(self):
         self.sent: list[tuple[str, str, int]] = []
 
-    async def send_login_code(self, recipient: str, code: str, ttl_seconds: int) -> None:
+    async def send_login_code(
+        self, recipient: str, code: str, ttl_seconds: int, delivery_id: str | None = None
+    ) -> None:
         self.sent.append((recipient, code, ttl_seconds))
 
 

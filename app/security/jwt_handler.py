@@ -1,4 +1,5 @@
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -22,6 +23,44 @@ def _get_private_key():
 
 def _get_public_key():
     return _load_key(settings.jwt_public_key_path)
+
+
+def _decode_with_key(token: str, key, issuer: str) -> dict:
+    return jwt.decode(
+        token,
+        key,
+        algorithms=[settings.jwt_algorithm],
+        issuer=issuer,
+        options={"verify_aud": False},
+    )
+
+
+def _trusted_jwks_key(token: str):
+    try:
+        header = jwt.get_unverified_header(token)
+        kid = header.get("kid")
+        if not isinstance(kid, str) or not kid:
+            raise jwt.InvalidTokenError("trusted token is missing kid")
+        jwks = json.loads(Path(settings.jwt_trusted_jwks_path).read_text())
+        keys = jwks.get("keys") if isinstance(jwks, dict) else None
+        if not isinstance(keys, list):
+            raise jwt.InvalidTokenError("trusted JWKS has an invalid shape")
+        matches = [
+            key
+            for key in keys
+            if isinstance(key, dict)
+            and key.get("kid") == kid
+            and key.get("kty") == "RSA"
+            and key.get("use", "sig") == "sig"
+            and key.get("alg", settings.jwt_algorithm) == settings.jwt_algorithm
+        ]
+        if len(matches) != 1:
+            raise jwt.InvalidTokenError("trusted JWKS key is missing or ambiguous")
+        return jwt.PyJWK.from_dict(matches[0], algorithm=settings.jwt_algorithm).key
+    except jwt.InvalidTokenError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise jwt.InvalidTokenError("trusted JWKS is unavailable") from exc
 
 
 def create_access_token(
@@ -78,13 +117,22 @@ def decode_token(token: str, verify_type: str | None = None) -> dict:
     Decode and verify a JWT token.
     Raises jwt.exceptions on failure.
     """
-    payload = jwt.decode(
-        token,
-        _get_public_key(),
-        algorithms=[settings.jwt_algorithm],
-        issuer=settings.auth_base_url,
-        options={"verify_aud": False},  # audience varies by app
-    )
+    try:
+        payload = _decode_with_key(token, _get_public_key(), settings.auth_base_url)
+    except jwt.InvalidSignatureError:
+        # 外部 issuer 只可扩展 access-token 验证；refresh token 必须始终由
+        # 本服务自己的密钥与 issuer 签发，避免跨环境旋转 token 链。
+        if (
+            verify_type != "access"
+            or not settings.jwt_trusted_jwks_path
+            or not settings.jwt_trusted_issuer
+        ):
+            raise
+        payload = _decode_with_key(
+            token,
+            _trusted_jwks_key(token),
+            settings.jwt_trusted_issuer,
+        )
     if verify_type and payload.get("type") != verify_type:
         raise jwt.InvalidTokenError(f"Expected token type '{verify_type}', got '{payload.get('type')}'")
     return payload

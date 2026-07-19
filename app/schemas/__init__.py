@@ -158,6 +158,22 @@ class LoginLogResponse(BaseModel):
     logged_at: datetime
 
 
+class EmailUsageResponse(BaseModel):
+    provider: str
+    configured: bool
+    available: bool
+    used_emails: int | None
+    monthly_quota: int | None
+    remaining_emails: int | None
+    usage_ratio: float | None
+    daily_used_emails: int | None
+    daily_quota: int | None
+    period_start: str | None
+    period_end: str | None
+    synced_at: str | None
+    source: str
+
+
 # ==================== Common ====================
 
 

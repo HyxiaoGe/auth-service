@@ -1,12 +1,30 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
-from app.schemas import AppCreateRequest, AppCreateResponse, AppResponse, LoginLogResponse
+from app.schemas import (
+    AppCreateRequest,
+    AppCreateResponse,
+    AppResponse,
+    EmailUsageResponse,
+    LoginLogResponse,
+)
 from app.security.deps import CurrentUser, get_current_superuser
-from app.services import auth_service
+from app.services import auth_service, email_usage
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+settings = get_settings()
+
+
+@router.get("/email-usage", response_model=EmailUsageResponse)
+async def get_email_usage(
+    response: Response,
+    _: CurrentUser = Depends(get_current_superuser),
+):
+    """读取最近一次 Resend 成功请求留下的脱敏配额快照。"""
+    response.headers["Cache-Control"] = "private, no-store"
+    return await email_usage.get_email_usage(settings)
 
 
 @router.post("/apps", response_model=AppCreateResponse, status_code=201)

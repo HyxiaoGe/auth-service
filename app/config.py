@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # Auth code (OAuth authorization code flow)
     auth_code_expire_seconds: int = 300  # 5-minute one-time code
 
+    # 账密端点仅供受控内部兼容任务使用，默认不注册到应用。
+    password_auth_enabled: bool = False
+    password_auth_internal_token: str = ""
+    password_auth_email_prefix: str = ""
+    password_auth_email_domain: str = ""
+
     # 邮箱验证码登录：所需密钥与发送端配置齐全前保持关闭。
     email_login_enabled: bool = False
     # Headless JSON 登录独立灰度；关闭后不提供邮箱验证码登录入口。
@@ -149,8 +155,23 @@ class Settings(BaseSettings):
                 ip_network(item.strip(), strict=False)
         return value
 
+    @field_validator("password_auth_email_prefix", "password_auth_email_domain")
+    @classmethod
+    def normalize_password_auth_email_scope(cls, value: str) -> str:
+        return value.strip()
+
     @model_validator(mode="after")
-    def validate_email_login_relationships(self):
+    def validate_auth_relationships(self):
+        if self.password_auth_enabled and len(self.password_auth_internal_token) < 32:
+            raise ValueError("password_auth_internal_token must contain at least 32 characters")
+        if self.password_auth_enabled and not self.password_auth_email_prefix:
+            raise ValueError("password_auth_email_prefix is required when password auth is enabled")
+        if self.password_auth_enabled and not self.password_auth_email_domain:
+            raise ValueError("password_auth_email_domain is required when password auth is enabled")
+        if self.password_auth_enabled and (
+            "@" in self.password_auth_email_prefix or "@" in self.password_auth_email_domain
+        ):
+            raise ValueError("password_auth_email_prefix and password_auth_email_domain must not contain @")
         if self.email_code_ttl_seconds > self.email_flow_ttl_seconds:
             raise ValueError("email_code_ttl_seconds must be <= email_flow_ttl_seconds")
         if self.email_flow_recovery_ttl_seconds < self.email_flow_ttl_seconds:

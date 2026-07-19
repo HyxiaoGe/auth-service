@@ -19,11 +19,9 @@ from app.schemas import (
     EmailHeadlessSendRequest,
     EmailHeadlessStartRequest,
     EmailHeadlessVerifyRequest,
-    LoginRequest,
     MessageResponse,
     ProfileUpdateRequest,
     RefreshRequest,
-    RegisterRequest,
     RevokeRequest,
     TokenResponse,
     UserInfo,
@@ -100,29 +98,6 @@ def oauth_error(
     if state is not None:
         params["state"] = state
     return oauth_redirect(redirect_uri, params)
-
-
-@router.post("/register", response_model=TokenResponse, status_code=201)
-async def register(
-    payload: RegisterRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Register a new user with email and password."""
-    await auth_service.register_user(payload, db)
-    # Auto-login after registration
-    login_payload = LoginRequest(email=payload.email, password=payload.password)
-    return await auth_service.login_user(login_payload, request, db)
-
-
-@router.post("/login", response_model=TokenResponse)
-async def login(
-    payload: LoginRequest,
-    request: Request,
-    db: AsyncSession = Depends(get_db),
-):
-    """Login with email and password. Optionally pass client_id to identify the app."""
-    return await auth_service.login_user(payload, request, db)
 
 
 def _email_browser_cookie(request: Request) -> str | None:

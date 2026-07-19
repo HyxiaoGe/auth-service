@@ -6,6 +6,52 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
+def test_password_auth_is_disabled_by_default():
+    settings = Settings()
+
+    assert settings.password_auth_enabled is False
+    assert settings.password_auth_internal_token == ""
+    assert settings.password_auth_email_prefix == ""
+    assert settings.password_auth_email_domain == ""
+
+
+@pytest.mark.parametrize("internal_token", ["", "short"])
+def test_enabled_password_auth_requires_long_internal_token(internal_token):
+    with pytest.raises(ValidationError, match="password_auth_internal_token"):
+        Settings(
+            password_auth_enabled=True,
+            password_auth_internal_token=internal_token,
+        )
+
+
+@pytest.mark.parametrize(
+    ("email_prefix", "email_domain"),
+    [
+        ("", "seanfield.org"),
+        ("fusion-perf+", ""),
+    ],
+)
+def test_enabled_password_auth_requires_email_scope(email_prefix, email_domain):
+    with pytest.raises(ValidationError, match="password_auth_email"):
+        Settings(
+            password_auth_enabled=True,
+            password_auth_internal_token="x" * 32,
+            password_auth_email_prefix=email_prefix,
+            password_auth_email_domain=email_domain,
+        )
+
+
+def test_enabled_password_auth_accepts_long_internal_token():
+    settings = Settings(
+        password_auth_enabled=True,
+        password_auth_internal_token="x" * 32,
+        password_auth_email_prefix="fusion-perf+",
+        password_auth_email_domain="seanfield.org",
+    )
+
+    assert settings.password_auth_enabled is True
+
+
 def test_dev_session_cookie_is_lax_host_only_not_secure():
     s = Settings(app_env="development")
     assert s.session_cookie_name == "sso_session"

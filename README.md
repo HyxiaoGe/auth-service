@@ -1,6 +1,6 @@
 # Sean Auth Service
 
-统一认证授权服务 —— 为所有项目提供统一的登录、注册、OAuth 社交登录、JWT 签发与验证。
+统一认证授权服务 —— 为所有项目提供统一的登录、OAuth 社交登录、JWT 签发与验证。
 
 ## 架构
 
@@ -16,8 +16,8 @@
      │   Sean Auth Service     │
      │   (FastAPI + PostgreSQL)│
      │                         │
-     │  • 邮箱密码登录          │
-     │  • 邮箱验证码 / 社交登录 │
+     │  • 邮箱验证码登录        │
+     │  • Google/GitHub 登录    │
      │  • JWT 签发 (RS256)     │
      │  • Token 刷新 / 撤销    │
      │  • 多应用管理            │
@@ -108,8 +108,6 @@ configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /auth/register | 邮箱密码注册 |
-| POST | /auth/login | 邮箱密码登录 |
 | GET  | /auth/authorize | SSO 授权端点 (PKCE S256；`prompt=none` 静默登录) |
 | GET  | /auth/capabilities | 当前 Origin 与指定 app 可用的认证能力；headless 需带 `client_id`、`redirect_uri` |
 | POST | /auth/email/headless/start | 创建弹窗邮箱验证码授权事务 |
@@ -128,6 +126,13 @@ configure({ authUrl: AUTH_URL, clientId: CLIENT_ID, redirectUri: `${origin}/auth
 | GET  | /admin/apps | 查看接入应用列表 |
 | POST | /admin/apps | 注册新应用 |
 | GET  | /admin/login-logs | 查看登录日志 |
+
+`POST /auth/register` 与 `POST /auth/login` 默认不会注册，也不会出现在 OpenAPI 中。
+仅现有受控内部任务需要兼容时，才可同时配置 `PASSWORD_AUTH_ENABLED=true`、至少 32 字符的
+`PASSWORD_AUTH_INTERNAL_TOKEN`、非空 `PASSWORD_AUTH_EMAIL_PREFIX` 与精确的
+`PASSWORD_AUTH_EMAIL_DOMAIN`，并在请求的 `X-Fusion-Internal-Auth` 头中传入完全相同的令牌。
+例如 `fusion-perf+` 与 `seanfield.org` 只允许 `fusion-perf+...@seanfield.org`。即使启用，两端点
+仍不进入 OpenAPI；令牌缺失、错误或邮箱超出范围时统一返回 404，不应作为产品登录能力接入。
 
 邮箱弹窗登录在调用
 `/auth/capabilities?client_id=...&redirect_uri=...` 时才可能返回

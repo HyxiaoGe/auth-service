@@ -8,9 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.database import engine
-from app.routers import admin, auth, oauth
+from app.routers import admin, auth, oauth, password_auth
 from app.security.jwt_handler import get_jwks
 from app.services import email_sender
 from app.utils.redis import close_redis, get_redis
@@ -70,9 +70,23 @@ app.add_middleware(
 
 # ==================== Routers ====================
 
+
+def include_password_auth_router(target_app: FastAPI, config: Settings) -> None:
+    """仅在显式配置完整时注册隐藏的内部账密兼容端点。"""
+    if config.password_auth_enabled:
+        target_app.include_router(
+            password_auth.create_router(
+                config.password_auth_internal_token,
+                config.password_auth_email_prefix,
+                config.password_auth_email_domain,
+            )
+        )
+
+
 app.include_router(auth.router)
 app.include_router(oauth.router)
 app.include_router(admin.router)
+include_password_auth_router(app, settings)
 
 
 # ==================== JWKS Endpoint ====================

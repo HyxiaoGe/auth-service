@@ -562,6 +562,7 @@ async def test_headless_verify_returns_only_authorization_code_and_starts_sso_se
         "app_client_id": "appA",
         "redirect_uri": CALLBACK,
         "provider": "email_otp",
+        "auth_generation": 0,
         "code_challenge": CHALLENGE,
     }
     session_cookie = next(value for value in response.headers.getlist("set-cookie") if "sso_session=" in value)

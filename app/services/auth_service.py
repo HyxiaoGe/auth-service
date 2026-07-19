@@ -198,26 +198,39 @@ async def _find_user_provider_identity(
 
 async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> TokenResponse:
     """Use a refresh token to get a new access token (with rotation)."""
-    # Decode
+    # 先只用本服务签名的 refresh JWT 定位用户。generation 缺失仅兼容迁移前 token，
+    # 按 0 解释；其它畸形值一律失败。
     try:
-        decode_token(refresh_token_str, verify_type="refresh")
+        payload = decode_token(refresh_token_str, verify_type="refresh")
+        user_id = uuid.UUID(payload["sub"])
+        token_generation = payload.get("auth_generation", 0)
+        if type(token_generation) is not int or token_generation < 0:
+            raise ValueError("invalid auth_generation")
     except Exception as err:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from err
 
-    # Check DB. FOR UPDATE locks the row so a concurrent replay of the same token serializes
-    # behind us -- the grace window below can then be consumed at most once (selectinload runs
-    # a separate, unlocked query for the user, so no "FOR UPDATE on outer join" problem).
+    # 全部 refresh 与 logout 统一先锁 users 行，再触碰 refresh_tokens。这个锁序既避免
+    # 反向锁死，也把两种竞态串行化：refresh 先提交则 logout 会撤销 successor；logout
+    # 先提交则 refresh 会看到已递增 generation 并拒绝。
+    user_result = await db.execute(select(User).where(User.id == user_id).with_for_update())
+    user = user_result.scalar_one_or_none()
+    if user is None or user.auth_generation != token_generation:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
+
     token_hash = hash_token(refresh_token_str)
     result = await db.execute(
         select(RefreshToken)
-        .options(selectinload(RefreshToken.user))
         .where(RefreshToken.token_hash == token_hash)
         .with_for_update()
     )
     stored = result.scalar_one_or_none()
 
     # Unknown/forged token (hash not in DB): hard 401, no grace, no revoke-all.
-    if not stored:
+    if (
+        not stored
+        or stored.user_id != user.id
+        or stored.auth_generation != token_generation
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
     if stored.is_revoked:
@@ -232,13 +245,12 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
         # app's lost-rotation replay into a cross-app spurious logout (observed live: an audio
         # replay collaterally revoked the same user's valid fusion token). A deliberate
         # account-wide logout still sweeps every app via the /logout path (app_client_id=None).
-        if _within_rotation_grace(stored) and not await _logout_after_rotation(stored):
+        if _within_rotation_grace(stored, user) and not await _logout_after_rotation(stored):
             stored.grace_consumed = True  # single-use gate (atomic under the row lock above)
-            return await _issue_tokens(stored.user, stored.app_client_id, db)
+            return await _issue_tokens(user, stored.app_client_id, db)
         await _revoke_all_user_tokens(stored.user_id, db, app_client_id=stored.app_client_id)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
-    user = stored.user
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
 
@@ -252,12 +264,12 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
     return tokens
 
 
-def _within_rotation_grace(stored: RefreshToken) -> bool:
+def _within_rotation_grace(stored: RefreshToken, user: User) -> bool:
     """True iff this revoked token looks like a lost-response retry eligible for a one-time
     re-issue: revoked by a normal rotation (``rotated_at`` set), inside the grace window, not yet
     consumed, and the account still active. Everything else is treated as reuse. ``grace`` <= 0
     disables the window entirely (rollback switch)."""
-    if stored.rotated_at is None or stored.grace_consumed or not stored.user.is_active:
+    if stored.rotated_at is None or stored.grace_consumed or not user.is_active:
         return False
     if settings.refresh_reuse_grace_seconds <= 0:
         return False
@@ -372,16 +384,19 @@ async def get_login_logs(
 async def _issue_tokens(user: User, app_client_id: str | None, db: AsyncSession) -> TokenResponse:
     """Issue a pair of access + refresh tokens for a user."""
     scopes = ["admin"] if user.is_superuser else ["user"]
+    auth_generation = getattr(user, "auth_generation", 0)
 
     access_token = create_access_token(
         user_id=str(user.id),
         email=user.email,
         app_client_id=app_client_id,
         scopes=scopes,
+        auth_generation=auth_generation,
     )
     refresh_token_str, token_hash, expires_at = create_refresh_token(
         user_id=str(user.id),
         app_client_id=app_client_id,
+        auth_generation=auth_generation,
     )
 
     # Store refresh token in DB
@@ -389,6 +404,7 @@ async def _issue_tokens(user: User, app_client_id: str | None, db: AsyncSession)
         user_id=user.id,
         token_hash=token_hash,
         app_client_id=app_client_id,
+        auth_generation=auth_generation,
         expires_at=expires_at,
     )
     db.add(stored_token)
@@ -444,8 +460,22 @@ async def _revoke_all_user_tokens(user_id: uuid.UUID, db: AsyncSession, app_clie
     conditions = [RefreshToken.user_id == user_id, RefreshToken.is_revoked.is_(False)]
     if app_client_id is not None:
         conditions.append(RefreshToken.app_client_id == app_client_id)
-    result = await db.execute(select(RefreshToken).where(*conditions))
+    result = await db.execute(select(RefreshToken).where(*conditions).with_for_update())
     for token in result.scalars():
         token.is_revoked = True
         token.revoked_at = datetime.now(UTC)
     await db.commit()
+
+
+async def logout_user(user_id: uuid.UUID, db: AsyncSession) -> None:
+    """在一个数据库事务中递增认证代际并撤销用户的全部 refresh token。
+
+    refresh 和 auth-code exchange 都先获取同一用户行锁，因此本函数提交后，不会
+    有携带旧 generation 的并发请求再签发 successor。
+    """
+    result = await db.execute(select(User).where(User.id == user_id).with_for_update())
+    user = result.scalar_one_or_none()
+    if user is None:
+        return
+    user.auth_generation += 1
+    await _revoke_all_user_tokens(user.id, db)

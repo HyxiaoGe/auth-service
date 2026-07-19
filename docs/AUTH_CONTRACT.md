@@ -79,7 +79,10 @@ OAuth 2.0 authorization endpoint, PKCE **mandatory**, `response_type=code` only.
 | `nonce`, `scope` | opt | Accepted; see [Notes](#notes--current-limits). |
 
 Outcomes:
-- Live session, `prompt` not `login`/`select_account` → `302 redirect_uri?code=<code>&state=<state>`.
+- Live session, `prompt` not `login`/`select_account` → the IdP first confirms the user is
+  active and the session's `auth_generation` still matches PostgreSQL, then returns
+  `302 redirect_uri?code=<code>&state=<state>`. A stale session is deleted and handled as
+  no session instead of repeatedly minting codes that cannot be redeemed.
 - `prompt=none`, no session → `302 redirect_uri?error=login_required&error_description=no+active+session&state=<state>`.
 - No session, `provider=google|github` → `302` to social consent; unsupported providers such as `email` → `302 redirect_uri?error=invalid_request&...&state=`.
 - Bad `client_id`/unregistered `redirect_uri` → **`400` JSON** `{error:"invalid_client", error_description}` (never redirects to an unvalidated uri).
@@ -205,6 +208,9 @@ Request (JSON):
 ```
 - The `code` is single-use. `client_id` must match the app the code was minted for.
 - `code_verifier` is required for codes minted via `/auth/authorize` (PKCE-bound).
+- The code is also bound to the user's current `auth_generation`. A code minted before
+  `/auth/logout` cannot be exchanged after logout, regardless of whether it came from
+  email OTP, Google, GitHub, or silent SSO. Legacy codes without this binding fail closed.
 - No `client_secret` — consumers are public PKCE clients.
 
 Response `200`:
@@ -217,11 +223,20 @@ Response `200`:
 
 Request `{ "refresh_token": "<jwt>" }` → Response `200` same shape as above, with a **new
 pair**. Refresh tokens **rotate**: the old one is revoked on each refresh. Presenting an
-**already-revoked** refresh token is treated as a reuse/theft event — the IdP revokes
-**all** of that user's refresh tokens and returns `401`. A token that is unknown (not in
-the store) or fails signature/type validation simply returns `401` (no revoke-all). So a
-consumer must persist and use only the most recent refresh token, and coalesce concurrent
-refreshes.
+**already-revoked** refresh token normally becomes a reuse/theft event: the IdP revokes
+that app's refresh-token lineage and returns `401` (a legacy token without an app binding
+falls back to account-wide revocation). A narrowly timed, first replay of a token revoked
+by normal rotation may receive one grace re-issue so a lost HTTP response does not create
+a false theft event; the grace is single-use and is disabled after logout. A token that is
+unknown (not in the store), fails signature/type validation, or carries an auth generation
+different from the locked user/DB token row simply returns `401`. Consumers must still
+persist only the newest refresh token and coalesce concurrent refreshes.
+
+Refresh and logout serialize on the PostgreSQL user row. Refresh locks the user first and
+then the refresh-token row; logout takes the same user lock, increments `auth_generation`,
+and revokes every refresh token in one transaction. Therefore a refresh that commits first
+is subsequently swept by logout, while a refresh that runs second sees the new generation
+and cannot mint a successor.
 
 ### `POST /auth/token/revoke` — drop a refresh token
 
@@ -247,7 +262,8 @@ and `client_id` may be sent **either** as a JSON body `{ "post_logout_redirect_u
 "client_id": "..." }` **or** as urlencoded form fields — the form variant lets a top-level
 `<form method=POST>` carry the `SameSite=Lax` session cookie to this cross-site, POST-only
 endpoint (this is the browser SDK's single-logout path). Ends the shared IdP session,
-revokes all of the user's refresh tokens, clears the session cookie. If
+atomically increments the user's `auth_generation`, revokes all of the user's refresh
+tokens, and clears the session cookie. If
 `post_logout_redirect_uri` is a registered redirect uri → `302` there (open-redirect
 guarded); otherwise `200 {message}`. When `client_id` is supplied the uri must be
 registered **for that app** (tighter); without it, any active app's registered uri matches.
@@ -279,11 +295,16 @@ Both tokens are RS256 JWTs. Header: `{ "alg":"RS256", "kid":"auth-key-1", "typ":
 | `iat` / `exp` | issued-at / +15 min |
 | `jti` | unique id |
 | `type` | `"access"` |
+| `auth_generation` | user's authentication generation when the token was issued |
 | `aud` | the app's `client_id` (present when issued with one) |
 | `scopes` | `["admin"]` for superusers else `["user"]` (present when non-empty) |
 
 **Refresh token** (30 days): `sub`, `iss`, `iat`, `exp` (+30d), `jti`, `type:"refresh"`,
-`aud`. No `email`/`scopes`. Stored server-side (hashed) for rotation + reuse detection.
+`auth_generation`, `aud`. No `email`/`scopes`. Stored server-side (hashed, with the same
+generation) for rotation + reuse detection. The first deployment introducing this field
+raises every existing user to generation 1 while legacy refresh rows and JWTs remain at
+generation 0, intentionally forcing a one-time re-login across existing applications.
+New users start at generation 0 and only advance on account-wide logout.
 
 ## Verifying tokens (backend requirements)
 

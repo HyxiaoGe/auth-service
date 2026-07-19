@@ -495,6 +495,7 @@ async def verify_email_headless(
         client_id=flow["client_id"],
         redirect_uri=flow["redirect_uri"],
         provider="email_otp",
+        auth_generation=getattr(verified.user, "auth_generation", 0),
         code_challenge=flow["code_challenge"],
     )
     response = _headless_json(
@@ -504,7 +505,12 @@ async def verify_email_headless(
             "expires_in": settings.auth_code_expire_seconds,
         }
     )
-    await session_service.start_session(response, str(verified.user.id), ["email_otp"])
+    await session_service.start_session(
+        response,
+        str(verified.user.id),
+        ["email_otp"],
+        auth_generation=getattr(verified.user, "auth_generation", 0),
+    )
     return response
 
 
@@ -551,7 +557,7 @@ async def logout(
     if session:
         user_id = session.get("user_id")
         if user_id:
-            await auth_service._revoke_all_user_tokens(uuid.UUID(user_id), db)
+            await auth_service.logout_user(uuid.UUID(user_id), db)
             # Also kill in-flight stateless access tokens for this user: revoking refresh
             # tokens only stops NEW ones, but the user's other apps still hold valid access
             # tokens until they expire. TTL = access-token lifetime so the marker self-cleans.
@@ -626,6 +632,36 @@ async def _resolve_authorize_app(client_id: str, redirect_uri: str, db: AsyncSes
     return app
 
 
+async def _validate_silent_session(
+    sid: str | None,
+    session: dict,
+    db: AsyncSession,
+) -> User | None:
+    """用数据库当前状态确认 SSO session 仍属于活跃且同代际的用户。
+
+    多个浏览器会持有不同 sid；任一 sid 完成全局登出后，其他旧 sid 仍可能留在
+    Redis。不能继续用它们反复签发注定兑换失败的旧代际 code，因此失配时立即
+    删除当前 sid，并让 /authorize 按无 session 继续。
+    """
+    if sid is None:
+        return None
+    session_generation = session.get("auth_generation", 0)
+    if type(session_generation) is not int or session_generation < 0:
+        await delete_session(sid)
+        return None
+    try:
+        user_id = uuid.UUID(session["user_id"])
+    except (KeyError, TypeError, ValueError):
+        await delete_session(sid)
+        return None
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user is None or not user.is_active or user.auth_generation != session_generation:
+        await delete_session(sid)
+        return None
+    return user
+
+
 @router.get("/authorize")
 async def authorize(
     request: Request,
@@ -667,16 +703,22 @@ async def authorize(
         )
 
     # 3. resolve the IdP session (slides TTL, enforces absolute lifetime)
-    _sid, session = await session_service.resolve_session(request)
+    sid, session = await session_service.resolve_session(request)
 
     # 4. silent SSO — a live session and no forced re-auth
     if session and prompt not in ("login", "select_account"):
+        session_user = await _validate_silent_session(sid, session, db)
+        if session_user is None:
+            session = None
+
+    if session and prompt not in ("login", "select_account"):
         amr = session.get("amr") or ["sso"]
         code = await oauth_service.mint_auth_code(
-            user_id=session["user_id"],
+            user_id=str(session_user.id),
             client_id=client_id,
             redirect_uri=redirect_uri,
             provider=amr[0],
+            auth_generation=session_user.auth_generation,
             code_challenge=code_challenge,
         )
         params = {"code": code}

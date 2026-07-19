@@ -171,11 +171,26 @@ async def exchange_code_for_tokens(
 
     _enforce_pkce(code_data, payload.code_verifier)
 
-    # Look up user
-    result = await db.execute(select(User).where(User.id == code_data["user_id"]))
+    code_generation = code_data.get("auth_generation")
+    if type(code_generation) is not int or code_generation < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired authorization code",
+        )
+
+    # 与 logout/refresh 统一先锁用户行。若 code 在 logout 前签发，等待锁后会看到
+    # 已递增的 generation，从而在签发任何 token 前失败。
+    result = await db.execute(
+        select(User).where(User.id == code_data["user_id"]).with_for_update()
+    )
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User not found or inactive")
+    if user.auth_generation != code_generation:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired authorization code",
+        )
 
     tokens = await auth_service._issue_tokens(user, payload.client_id, db)
     await auth_service._log_login(
@@ -353,6 +368,7 @@ async def _social_redirect(user: User, state_data: dict, provider: str) -> Redir
         client_id=state_data["client_id"],
         redirect_uri=redirect_uri,
         provider=provider,
+        auth_generation=getattr(user, "auth_generation", 0),
         code_challenge=state_data.get("code_challenge"),
     )
     params = {"code": code}
@@ -360,5 +376,10 @@ async def _social_redirect(user: User, state_data: dict, provider: str) -> Redir
     if app_state is not None:
         params["state"] = app_state
     response = oauth_redirect(redirect_uri, params)
-    await session_service.start_session(response, str(user.id), [provider])
+    await session_service.start_session(
+        response,
+        str(user.id),
+        [provider],
+        auth_generation=getattr(user, "auth_generation", 0),
+    )
     return response

@@ -41,12 +41,17 @@ class _FakeResult:
 
 
 class _FakeDB:
-    """Returns a preset ``stored`` from execute(); commit is a no-op (terminal helpers faked)."""
+    """依次返回用户行与 refresh 行，模拟统一的用户优先锁序。"""
 
-    def __init__(self, stored):
+    def __init__(self, stored, user):
         self._stored = stored
+        self._user = user
 
-    async def execute(self, *_args, **_kwargs):
+    async def execute(self, statement, *_args, **_kwargs):
+        entity = statement.column_descriptions[0]["entity"]
+        assert statement._for_update_arg is not None
+        if entity is auth_service.User:
+            return _FakeResult(self._user)
         return _FakeResult(self._stored)
 
     async def commit(self):
@@ -64,14 +69,22 @@ def _stored(*, is_revoked, rotated_at, grace_consumed=False, is_active=True, use
         grace_consumed=grace_consumed,
         app_client_id=app_client_id,
         user_id=uid,
-        user=SimpleNamespace(id=uid, is_active=is_active),
+        auth_generation=0,
+        user=SimpleNamespace(id=uid, is_active=is_active, auth_generation=0),
     )
 
 
 @pytest.fixture
 def patched(monkeypatch):
     """Neutralize token decode/hash and record which terminal helper the branch calls."""
-    monkeypatch.setattr(auth_service, "decode_token", lambda *a, **k: None)
+    def fake_decode(token, *_args, **_kwargs):
+        return {
+            "sub": token,
+            "auth_generation": 0,
+            "type": "refresh",
+        }
+
+    monkeypatch.setattr(auth_service, "decode_token", fake_decode)
     monkeypatch.setattr(auth_service, "hash_token", lambda _s: "h")
 
     calls = {"issued": False, "issued_user": None, "revoked": False, "revoked_app": "UNSET"}
@@ -91,7 +104,9 @@ def patched(monkeypatch):
 
 
 async def _refresh(stored):
-    return await auth_service.refresh_access_token("tok", _FakeDB(stored))
+    uid = stored.user_id if stored is not None else uuid.uuid4()
+    user = stored.user if stored is not None else SimpleNamespace(id=uid, is_active=True, auth_generation=0)
+    return await auth_service.refresh_access_token(str(uid), _FakeDB(stored, user))
 
 
 # ---- happy path -------------------------------------------------------------------------

@@ -36,6 +36,7 @@ async def mint_auth_code(
     client_id: str,
     redirect_uri: str,
     provider: str,
+    auth_generation: int,
     code_challenge: str | None = None,
 ) -> str:
     """Create a one-time auth code (Redis, single-use) and return it.
@@ -51,6 +52,7 @@ async def mint_auth_code(
         "app_client_id": client_id,
         "redirect_uri": redirect_uri,
         "provider": provider,
+        "auth_generation": auth_generation,
     }
     if code_challenge is not None:
         payload["code_challenge"] = code_challenge
@@ -191,7 +193,7 @@ async def exchange_google_code(code: str) -> dict:
         return {
             "provider_id": userinfo["id"],
             "email": userinfo.get("email"),
-            "email_verified": bool(userinfo.get("verified_email")),
+            "email_verified": userinfo.get("verified_email") is True,
             "name": userinfo.get("name"),
             "avatar_url": userinfo.get("picture"),
         }

@@ -68,6 +68,7 @@ def create_access_token(
     email: str,
     app_client_id: str | None = None,
     scopes: list[str] | None = None,
+    auth_generation: int = 0,
 ) -> str:
     """Create a short-lived access token."""
     now = datetime.now(UTC)
@@ -79,6 +80,7 @@ def create_access_token(
         "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
         "jti": str(uuid.uuid4()),
         "type": "access",
+        "auth_generation": auth_generation,
     }
     if app_client_id:
         payload["aud"] = app_client_id
@@ -88,7 +90,11 @@ def create_access_token(
     return jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm, headers={"kid": "auth-key-1"})
 
 
-def create_refresh_token(user_id: str, app_client_id: str | None = None) -> tuple[str, str, datetime]:
+def create_refresh_token(
+    user_id: str,
+    app_client_id: str | None = None,
+    auth_generation: int = 0,
+) -> tuple[str, str, datetime]:
     """
     Create a long-lived refresh token.
     Returns: (token_string, token_hash, expires_at)
@@ -103,6 +109,7 @@ def create_refresh_token(user_id: str, app_client_id: str | None = None) -> tupl
         "exp": expires_at,
         "jti": str(uuid.uuid4()),
         "type": "refresh",
+        "auth_generation": auth_generation,
     }
     if app_client_id:
         payload["aud"] = app_client_id

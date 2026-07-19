@@ -28,6 +28,7 @@ class _User:
         self.email = email
         self.is_active = active
         self.is_superuser = superuser
+        self.auth_generation = 0
 
 
 class _Scalars:
@@ -201,6 +202,7 @@ async def test_email_auth_code_exchange_keeps_stable_user_uuid_and_login_method(
         client_id="appA",
         redirect_uri=CALLBACK,
         provider="email_otp",
+        auth_generation=0,
         code_challenge=CHALLENGE,
     )
     captured = {}
@@ -252,8 +254,11 @@ async def test_email_login_token_uses_existing_user_scope_and_uuid(monkeypatch, 
     assert tokens.access_token == "access"
     assert captured["access"]["user_id"] == str(user.id)
     assert captured["access"]["scopes"] == expected_scopes
+    assert captured["access"]["auth_generation"] == 0
     assert captured["refresh"]["user_id"] == str(user.id)
+    assert captured["refresh"]["auth_generation"] == 0
     assert captured["stored"].user_id == user.id
+    assert captured["stored"].auth_generation == 0
     assert captured["committed"] is True
 
 

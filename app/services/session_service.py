@@ -63,7 +63,12 @@ async def resolve_session(request: Request) -> tuple[str | None, dict | None]:
     return sid, payload
 
 
-async def start_session(response: Response, user_id: str, amr: list[str]) -> str:
+async def start_session(
+    response: Response,
+    user_id: str,
+    amr: list[str],
+    auth_generation: int = 0,
+) -> str:
     """Mint a brand-new session (fresh sid -> Redis -> Set-Cookie) and return the sid.
 
     A fresh sid is generated on every call and the inbound cookie is never reused,
@@ -73,7 +78,14 @@ async def start_session(response: Response, user_id: str, amr: list[str]) -> str
     now = int(time.time())
     await create_session(
         sid,
-        {"user_id": user_id, "auth_time": now, "amr": amr, "created_at": now, "last_seen": now},
+        {
+            "user_id": user_id,
+            "auth_generation": auth_generation,
+            "auth_time": now,
+            "amr": amr,
+            "created_at": now,
+            "last_seen": now,
+        },
         settings.session_ttl_seconds,
     )
     set_session_cookie(response, sid)

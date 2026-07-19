@@ -14,7 +14,11 @@ CHALLENGE = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
 
 async def test_mint_auth_code_payload_shape():
     code = await oauth_service.mint_auth_code(
-        user_id="u1", client_id="appA", redirect_uri="https://app/cb", provider="google"
+        user_id="u1",
+        client_id="appA",
+        redirect_uri="https://app/cb",
+        provider="google",
+        auth_generation=3,
     )
     data = await consume_auth_code(code)
     assert data == {
@@ -22,6 +26,7 @@ async def test_mint_auth_code_payload_shape():
         "app_client_id": "appA",
         "redirect_uri": "https://app/cb",
         "provider": "google",
+        "auth_generation": 3,
     }
 
 
@@ -31,6 +36,7 @@ async def test_mint_auth_code_binds_challenge_when_given():
         client_id="appA",
         redirect_uri="https://app/cb",
         provider="google",
+        auth_generation=3,
         code_challenge=CHALLENGE,
     )
     data = await consume_auth_code(code)
@@ -39,7 +45,11 @@ async def test_mint_auth_code_binds_challenge_when_given():
 
 async def test_mint_auth_code_is_single_use():
     code = await oauth_service.mint_auth_code(
-        user_id="u1", client_id="appA", redirect_uri="https://app/cb", provider="google"
+        user_id="u1",
+        client_id="appA",
+        redirect_uri="https://app/cb",
+        provider="google",
+        auth_generation=3,
     )
     assert await consume_auth_code(code) is not None
     assert await consume_auth_code(code) is None  # consumed

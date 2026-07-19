@@ -499,6 +499,26 @@ async def test_google_exchange_propagates_verified_email(monkeypatch):
     assert info["email_verified"] is True
 
 
+@pytest.mark.parametrize("verified_email", [False, "false", 1, None])
+async def test_google_exchange_only_accepts_literal_true_verified_email(monkeypatch, verified_email):
+    url = "https://www.googleapis.com/oauth2/v2/userinfo"
+    client = _OAuthClient(
+        {
+            url: {
+                "id": "g1",
+                "email": "user@example.com",
+                "verified_email": verified_email,
+                "name": "User",
+            }
+        }
+    )
+    monkeypatch.setattr(oauth_service, "create_google_client", lambda: client)
+
+    info = await oauth_service.exchange_google_code("code")
+
+    assert info["email_verified"] is False
+
+
 async def test_github_always_uses_primary_verified_non_noreply_email(monkeypatch):
     user_url = "https://api.github.com/user"
     emails_url = "https://api.github.com/user/emails"

@@ -8,6 +8,7 @@ tests) so these stay pure unit tests over the routing logic.
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -108,6 +109,26 @@ async def _live_session(sid, user_id):
     await create_session(sid, {"user_id": user_id, "auth_time": int(time.time()), "amr": ["google"]}, ttl=100)
 
 
+class _SessionUserResult:
+    def __init__(self, user):
+        self.user = user
+
+    def scalar_one_or_none(self):
+        return self.user
+
+
+class _SessionUserDB:
+    def __init__(self, user):
+        self.user = user
+
+    async def execute(self, _statement):
+        return _SessionUserResult(self.user)
+
+
+def _session_user(user_id: str, *, generation: int = 0, active: bool = True):
+    return SimpleNamespace(id=uuid.UUID(user_id), auth_generation=generation, is_active=active)
+
+
 async def test_authorize_rejects_non_code_response_type(valid_app):
     resp = await _authorize(_request(), response_type="token")
     assert isinstance(resp, JSONResponse) and resp.status_code == 400  # 400 JSON, NOT a redirect
@@ -141,7 +162,7 @@ async def test_authorize_rejects_plain_pkce(valid_app):
 async def test_authorize_silent_when_session_valid(valid_app):
     uid = str(uuid.uuid4())
     await _live_session("sess1", uid)
-    resp = await _authorize(_request("sess1"), state="S2")
+    resp = await _authorize(_request("sess1"), state="S2", db=_SessionUserDB(_session_user(uid)))
     assert isinstance(resp, RedirectResponse) and resp.status_code == 302
     q = _loc_query(resp)
     assert "error" not in q
@@ -151,6 +172,7 @@ async def test_authorize_silent_when_session_valid(valid_app):
     assert data["user_id"] == uid
     assert data["app_client_id"] == "appA"
     assert data["code_challenge"] == CHALLENGE
+    assert data["auth_generation"] == 0
 
 
 async def test_authorize_silent_preserves_business_query_and_replaces_reserved_values(valid_app):
@@ -160,6 +182,7 @@ async def test_authorize_silent_preserves_business_query_and_replaces_reserved_v
         _request("sess-query"),
         redirect_uri="https://app.example/cb?tenant=one&code=old&state=old&error=old",
         state="fresh",
+        db=_SessionUserDB(_session_user(uid)),
     )
 
     q = _loc_query(resp)
@@ -169,6 +192,63 @@ async def test_authorize_silent_preserves_business_query_and_replaces_reserved_v
     assert "error" not in q
     assert resp.headers["cache-control"] == "no-store"
     assert resp.headers["referrer-policy"] == "no-referrer"
+
+
+async def test_authorize_deletes_stale_generation_session_and_prompt_none_returns_login_required(valid_app):
+    uid = str(uuid.uuid4())
+    await create_session(
+        "stale-generation",
+        {
+            "user_id": uid,
+            "auth_generation": 2,
+            "auth_time": int(time.time()),
+            "amr": ["google"],
+        },
+        ttl=100,
+    )
+
+    response = await _authorize(
+        _request("stale-generation"),
+        prompt="none",
+        db=_SessionUserDB(_session_user(uid, generation=3)),
+    )
+
+    query = _loc_query(response)
+    assert query["error"] == ["login_required"]
+    assert await auth.get_session("stale-generation") is None
+
+
+@pytest.mark.parametrize(
+    ("session_generation", "user_generation", "active"),
+    [(1, 2, True), (1, 1, False)],
+)
+async def test_authorize_invalid_session_falls_through_to_interactive_login(
+    valid_app,
+    session_generation,
+    user_generation,
+    active,
+):
+    uid = str(uuid.uuid4())
+    await create_session(
+        "invalid-session-user",
+        {
+            "user_id": uid,
+            "auth_generation": session_generation,
+            "auth_time": int(time.time()),
+            "amr": ["google"],
+        },
+        ttl=100,
+    )
+
+    response = await _authorize(
+        _request("invalid-session-user"),
+        provider="google",
+        db=_SessionUserDB(_session_user(uid, generation=user_generation, active=active)),
+    )
+
+    assert isinstance(response, RedirectResponse)
+    assert "accounts.google.com" in response.headers["location"]
+    assert await auth.get_session("invalid-session-user") is None
 
 
 async def test_authorize_prompt_none_without_session(valid_app):

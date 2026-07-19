@@ -52,7 +52,7 @@ async def test_logout_deletes_session_revokes_tokens_and_clears_cookie(monkeypat
     async def fake_revoke(user_id, db, app_client_id=None):
         revoked["uid"] = user_id
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
 
     resp = Response()
     await auth.logout(request=_request(sid="s1"), response=resp, db=None)
@@ -74,7 +74,7 @@ async def test_email_otp_sso_session_uses_existing_logout_everywhere_path(monkey
     async def fake_revoke(user_id, db, app_client_id=None):
         revoked["uid"] = user_id
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
     response = Response()
     await auth.logout(request=_request(sid="email-sso"), response=response, db=None)
 
@@ -96,7 +96,7 @@ async def test_logout_writes_user_access_revocation_marker(monkeypatch):
     async def fake_revoke(user_id, db, app_client_id=None):
         return None
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
 
     resp = Response()
     await auth.logout(request=_request(sid="s5"), response=resp, db=None)
@@ -128,7 +128,7 @@ async def test_logout_completes_even_when_marker_write_fails(monkeypatch):
     async def boom_marker(*args, **kwargs):
         raise ConnectionError("redis down")
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
     monkeypatch.setattr(auth, "revoke_user_access_tokens", boom_marker)
 
     resp = Response()
@@ -144,7 +144,7 @@ async def test_logout_without_session_is_noop_but_clears_cookie(monkeypatch):
     async def fake_revoke(user_id, db, app_client_id=None):
         calls["n"] += 1
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
 
     resp = Response()
     await auth.logout(request=_request(sid=None), response=resp, db=None)
@@ -163,7 +163,7 @@ async def test_logout_form_post_redirects_to_registered_uri(monkeypatch):
     async def fake_registered(uri, db, client_id=None):
         return True
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
     monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
     body, ct = _form(post_logout_redirect_uri="https://app.example/auth/callback", client_id="appA")
@@ -186,7 +186,7 @@ async def test_logout_json_body_still_redirects_to_registered_uri(monkeypatch):
     async def fake_registered(uri, db, client_id=None):
         return True
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
     monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
     body, ct = _json_body(post_logout_redirect_uri="https://app.example/auth/callback")
@@ -206,7 +206,7 @@ async def test_logout_ignores_unregistered_post_logout_uri(monkeypatch):
     async def fake_registered(uri, db, client_id=None):
         return False  # open-redirect guard
 
-    monkeypatch.setattr(auth.auth_service, "_revoke_all_user_tokens", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
     monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
     body, ct = _form(post_logout_redirect_uri="https://evil.example/x")

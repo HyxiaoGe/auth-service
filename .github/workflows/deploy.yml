@@ -52,6 +52,8 @@ jobs:
           cd ~/project/auth-service || exit 1
           previous_sha="$(git rev-parse HEAD)"
           migration_failed=0
+          migration_succeeded=0
+          auth_generation_cutover=0
           rollback_env="$(mktemp /tmp/auth-service-env.XXXXXX)"
           cp .env "$rollback_env"
           chmod 600 "$rollback_env"
@@ -60,6 +62,21 @@ jobs:
             if ! cp "$rollback_env" .env; then rollback_status=1; fi
             if ! git reset --hard "$previous_sha"; then rollback_status=1; fi
             if ! git clean -fd; then rollback_status=1; fi
+            return "$rollback_status"
+          }
+          recover_stopped_previous() {
+            rollback_status=0
+            if ! restore_source; then rollback_status=1; fi
+            if ! docker compose start auth; then rollback_status=1; fi
+            recovered=0
+            for attempt in {1..30}; do
+              if docker exec auth-service python -c "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3); assert response.status == 200"; then
+                recovered=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$recovered" -ne 1 ]; then rollback_status=1; fi
             return "$rollback_status"
           }
           rollback() {
@@ -81,10 +98,19 @@ jobs:
             status=$?
             trap - EXIT
             if [ "$status" -ne 0 ]; then
-              if [ "$migration_failed" -eq 1 ]; then
-                echo "::warning::数据库迁移失败，保持旧容器继续服务"
-                if ! restore_source; then
-                  echo "::error::auth-service source restore failed"
+              if [ "$auth_generation_cutover" -eq 1 ] && [ "$migration_succeeded" -eq 1 ]; then
+                echo "::error::认证代际迁移已提交，禁止回滚到不兼容旧版本；保持安全失败并等待后续修复"
+              elif [ "$migration_failed" -eq 1 ]; then
+                if [ "$auth_generation_cutover" -eq 1 ]; then
+                  echo "::warning::数据库迁移失败，恢复已停止的旧容器"
+                  if ! recover_stopped_previous; then
+                    echo "::error::auth-service old container recovery failed"
+                  fi
+                else
+                  echo "::warning::数据库迁移失败，保持旧容器继续服务"
+                  if ! restore_source; then
+                    echo "::error::auth-service source restore failed"
+                  fi
                 fi
               elif ! rollback; then
                 echo "::error::auth-service rollback failed"
@@ -97,13 +123,25 @@ jobs:
           git fetch origin
           git reset --hard origin/main
           git clean -fd
-          # 先构建新镜像，再迁移，最后切换服务。
+          if git diff --name-only "$previous_sha"..HEAD -- alembic/versions/c8d9e0f1a2b3_add_auth_generation.py | grep -Fxq "alembic/versions/c8d9e0f1a2b3_add_auth_generation.py"; then
+            auth_generation_cutover=1
+          fi
+          # 先构建新镜像，再按迁移类型安全切换。
           docker compose build auth
+          if [ "$auth_generation_cutover" -eq 1 ]; then
+            # 旧实例不理解 auth_generation；迁移前先停流量，关闭双写协议窗口。
+            docker compose stop auth
+          fi
           if ! docker compose run --rm --no-deps auth alembic upgrade head; then
             migration_failed=1
-            echo "::error::数据库迁移失败，保持旧容器继续服务"
+            if [ "$auth_generation_cutover" -eq 1 ]; then
+              echo "::error::数据库迁移失败，恢复已停止的旧容器"
+            else
+              echo "::error::数据库迁移失败，保持旧容器继续服务"
+            fi
             exit 1
           fi
+          migration_succeeded=1
           docker compose up -d --no-build auth
           for attempt in {1..30}; do
             if docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/ready', timeout=3); assert response.status == 200; assert json.load(response)['status'] == 'ready'"; then

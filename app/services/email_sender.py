@@ -6,7 +6,8 @@ import ssl
 from collections.abc import Iterator
 from contextlib import contextmanager
 from email.message import EmailMessage
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid, parseaddr
+from html import escape
 from typing import Protocol
 
 from app.config import Settings, get_settings
@@ -31,6 +32,21 @@ _smtp_probe_requested: asyncio.Event | None = None
 
 def is_smtp_verified() -> bool:
     return _smtp_verified
+
+
+async def wait_for_smtp_verification(timeout_seconds: float, *, poll_seconds: float = 0.05) -> bool:
+    """限时等待后台 monitor 完成 SMTP acceptance 验证，不主动触发额外预检。"""
+    if is_smtp_verified():
+        return True
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, timeout_seconds)
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return False
+        await asyncio.sleep(min(poll_seconds, remaining))
+        if is_smtp_verified():
+            return True
 
 
 def invalidate_smtp_verification() -> None:
@@ -117,20 +133,47 @@ class SMTPEmailSender:
         with self._connection() as client:
             client.send_message(message)
 
-    def _message(self, *, recipient: str, subject: str, body: str) -> EmailMessage:
+    def _message(
+        self,
+        *,
+        recipient: str,
+        subject: str,
+        body: str,
+        html_body: str | None = None,
+    ) -> EmailMessage:
         message = EmailMessage()
         message["Subject"] = subject
         message["From"] = formataddr((self.config.smtp_from_name, self.config.smtp_from_email))
         message["To"] = recipient
+        message["Date"] = formatdate(localtime=False, usegmt=True)
+        sender_domain = parseaddr(self.config.smtp_from_email)[1].rpartition("@")[2] or None
+        message["Message-ID"] = make_msgid(domain=sender_domain)
+        message["Auto-Submitted"] = "auto-generated"
         message.set_content(body)
+        if html_body is not None:
+            message.add_alternative(html_body, subtype="html")
         return message
 
     def _send_sync(self, recipient: str, code: str, ttl_seconds: int) -> None:
         minutes = max(1, ttl_seconds // 60)
+        brand_name = self.config.smtp_from_name.strip() or self.config.smtp_from_email
+        safe_brand_name = escape(brand_name)
+        safe_code = escape(code)
         message = self._message(
             recipient=recipient,
-            subject="登录验证码",
-            body=f"你的登录验证码是：{code}\n\n验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。",
+            subject=f"{brand_name} 登录验证码",
+            body=(
+                f"你的 {brand_name} 登录验证码是：{code}\n\n"
+                f"验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。"
+            ),
+            html_body=(
+                '<!doctype html><html lang="zh-CN"><body>'
+                f"<h1>{safe_brand_name} 登录验证码</h1>"
+                "<p>请使用以下验证码完成登录：</p>"
+                f'<p style="font-size:28px;font-weight:700;letter-spacing:6px">{safe_code}</p>'
+                f"<p>验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。</p>"
+                "</body></html>"
+            ),
         )
 
         with self._connection() as client:

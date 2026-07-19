@@ -13,11 +13,12 @@ from app.database import engine
 from app.routers import admin, auth, oauth
 from app.security.jwt_handler import get_jwks
 from app.services import email_sender
-from app.services.email_sender import EmailDeliveryError, SMTPEmailSender
 from app.utils.redis import close_redis, get_redis
 
 settings = get_settings()
 READINESS_TIMEOUT_SECONDS = 2.0
+EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES = 4
+EMAIL_DELIVERY_VERIFICATION_GRACE_SECONDS = 10.0
 
 # App logging: the service previously emitted nothing to stdout/stderr (audit lived only in
 # the LoginLog table). uvicorn configures only its own uvicorn.* loggers and does NOT add a
@@ -145,7 +146,7 @@ async def health_ready(request: Request):
 
 @app.get("/health/email-delivery", tags=["Health"])
 async def email_delivery_health(request: Request):
-    """内部 SMTP 接收级预检：提交专用测试邮件，不证明收件箱送达或 SPF/DKIM。"""
+    """内部 SMTP 投递状态：限时等待后台 monitor 的接收级预检结果。"""
     if not _is_loopback_request(request):
         return _internal_health_forbidden()
     if not settings.email_login_enabled:
@@ -157,17 +158,20 @@ async def email_delivery_health(request: Request):
             status_code=503,
             content={"status": "misconfigured", "service": settings.app_name},
         )
-    generation = email_sender.smtp_failure_generation()
+    # SMTP socket timeout may apply independently to connect、STARTTLS、auth 和 send。
+    # health 等待完整阶段预算，避免正常但较慢的首次 monitor 预检被提前误判为失败。
+    verification_wait_seconds = (
+        settings.smtp_timeout_seconds * EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES
+        + EMAIL_DELIVERY_VERIFICATION_GRACE_SECONDS
+    )
     try:
-        await SMTPEmailSender(settings).preflight()
-    except EmailDeliveryError:
-        email_sender.invalidate_smtp_verification()
-        logging.getLogger(__name__).warning("SMTP acceptance preflight failed", exc_info=True)
-        return JSONResponse(
-            status_code=503,
-            content={"status": "not_ready", "service": settings.app_name},
+        verified = await email_sender.wait_for_smtp_verification(
+            verification_wait_seconds,
         )
-    if not email_sender.confirm_smtp_verification(generation):
+    except Exception:
+        logging.getLogger(__name__).warning("waiting for SMTP verification failed", exc_info=True)
+        verified = False
+    if not verified or not email_sender.is_smtp_verified():
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "service": settings.app_name},

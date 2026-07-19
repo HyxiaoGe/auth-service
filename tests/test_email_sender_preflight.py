@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import suppress
+from email.utils import parsedate_to_datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -100,6 +101,68 @@ async def test_smtp_preflight_wraps_message_submission_failure(monkeypatch):
 
     with pytest.raises(EmailDeliveryError, match="SMTP preflight failed"):
         await SMTPEmailSender(_settings()).preflight()
+
+
+def test_login_code_message_has_branded_multipart_content_and_transactional_headers(monkeypatch):
+    sent_messages = []
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def starttls(self, **_kwargs):
+            return None
+
+        def login(self, *_args):
+            return None
+
+        def send_message(self, message):
+            sent_messages.append(message)
+
+    monkeypatch.setattr(email_sender.smtplib, "SMTP", FakeSMTP)
+    sender = SMTPEmailSender(_settings(smtp_from_name="<Fusion & Friends>"))
+
+    sender._send_sync("user@example.com", "123456", 300)
+
+    message = sent_messages[0]
+    assert str(message["Subject"]) == "<Fusion & Friends> 登录验证码"
+    assert parsedate_to_datetime(message["Date"]) is not None
+    assert message["Message-ID"].endswith("@example.com>")
+    assert message["Auto-Submitted"] == "auto-generated"
+    assert message["List-Unsubscribe"] is None
+    assert message["List-Unsubscribe-Post"] is None
+    plain = message.get_body(preferencelist=("plain",)).get_content()
+    html = message.get_body(preferencelist=("html",)).get_content()
+    assert "123456" in plain
+    assert "123456" in html
+    assert "<Fusion & Friends>" not in html
+    assert "&lt;Fusion &amp; Friends&gt;" in html
+
+
+async def test_wait_for_smtp_verification_observes_monitor_state_without_sending(monkeypatch):
+    monkeypatch.setattr(email_sender, "_smtp_verified", False)
+    waiter = asyncio.create_task(email_sender.wait_for_smtp_verification(0.2, poll_seconds=0.001))
+    await asyncio.sleep(0)
+
+    assert waiter.done() is False
+    assert email_sender.confirm_smtp_verification(email_sender.smtp_failure_generation()) is True
+    assert await asyncio.wait_for(waiter, timeout=0.1) is True
+
+
+async def test_wait_for_smtp_verification_times_out_fail_closed(monkeypatch):
+    monkeypatch.setattr(email_sender, "_smtp_verified", False)
+
+    assert await asyncio.wait_for(
+        email_sender.wait_for_smtp_verification(0.01, poll_seconds=0.001),
+        timeout=0.1,
+    ) is False
+    assert email_sender.is_smtp_verified() is False
 
 
 async def _wait_for_probe_count(probe: AsyncMock, expected: int) -> None:

@@ -92,8 +92,8 @@ jobs:
             fi
             sleep 2
           done
-          # 提交一封专用部署预检邮件，仅验证 SMTP 接受；不证明收件箱送达或 SPF/DKIM。
-          docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/email-delivery', timeout=15); assert response.status == 200; assert json.load(response)['status'] in ('disabled', 'ready')"
+          # 等待启动 monitor 的专用 SMTP 预检结果；health 本身不再重复发送测试邮件。
+          docker exec auth-service python -c "import json, urllib.request; from app.config import get_settings; timeout = get_settings().smtp_timeout_seconds * 4 + 20; response = urllib.request.urlopen('http://127.0.0.1:8100/health/email-delivery', timeout=timeout); assert response.status == 200; assert json.load(response)['status'] in ('disabled', 'ready')"
           trap - EXIT
           cleanup
           docker image prune -f || true

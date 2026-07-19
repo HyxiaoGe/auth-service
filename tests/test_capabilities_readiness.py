@@ -319,8 +319,15 @@ async def test_email_delivery_success_keeps_hosted_off_and_headless_requires_con
         smtp_smoke_recipient="smtp-smoke@example.com",
     )
     preflight = AsyncMock()
+
+    async def report_monitor_success(_timeout_seconds):
+        assert email_sender.confirm_smtp_verification(email_sender.smtp_failure_generation()) is True
+        return True
+
+    wait_for_verification = AsyncMock(side_effect=report_monitor_success)
     monkeypatch.setattr(main_module, "settings", config)
     monkeypatch.setattr(auth, "settings", config)
+    monkeypatch.setattr(email_sender, "wait_for_smtp_verification", wait_for_verification)
     monkeypatch.setattr(email_sender.SMTPEmailSender, "preflight", preflight)
 
     before = await _get("/auth/capabilities")
@@ -332,10 +339,15 @@ async def test_email_delivery_success_keeps_hosted_off_and_headless_requires_con
     assert health.json()["status"] == "ready"
     assert after.json() == {"email_login": False, "email_headless_login": False}
     assert email_sender.is_smtp_verified() is True
-    preflight.assert_awaited_once_with()
+    expected_wait = (
+        config.smtp_timeout_seconds * main_module.EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES
+        + main_module.EMAIL_DELIVERY_VERIFICATION_GRACE_SECONDS
+    )
+    wait_for_verification.assert_awaited_once_with(expected_wait)
+    preflight.assert_not_awaited()
 
 
-async def test_email_delivery_failure_clears_capability(monkeypatch):
+async def test_email_delivery_health_timeout_is_fail_closed_without_running_preflight(monkeypatch):
     config = Settings(
         auth_base_url="http://localhost:8100",
         email_login_enabled=True,
@@ -346,12 +358,10 @@ async def test_email_delivery_failure_clears_capability(monkeypatch):
     )
     monkeypatch.setattr(main_module, "settings", config)
     monkeypatch.setattr(auth, "settings", config)
-    monkeypatch.setattr(email_sender, "_smtp_verified", True, raising=False)
-    monkeypatch.setattr(
-        email_sender.SMTPEmailSender,
-        "preflight",
-        AsyncMock(side_effect=EmailDeliveryError("bad credentials")),
-    )
+    wait_for_verification = AsyncMock(return_value=False)
+    preflight = AsyncMock(side_effect=EmailDeliveryError("must not be called"))
+    monkeypatch.setattr(email_sender, "wait_for_smtp_verification", wait_for_verification)
+    monkeypatch.setattr(email_sender.SMTPEmailSender, "preflight", preflight)
 
     health = await _get("/health/email-delivery")
     capability = await _get("/auth/capabilities")
@@ -360,36 +370,13 @@ async def test_email_delivery_failure_clears_capability(monkeypatch):
     assert health.json()["status"] == "not_ready"
     assert capability.json() == {"email_login": False, "email_headless_login": False}
     assert email_sender.is_smtp_verified() is False
-
-
-async def test_email_delivery_health_does_not_publish_stale_success_over_newer_failure(monkeypatch):
-    config = Settings(
-        auth_base_url="http://localhost:8100",
-        email_login_enabled=True,
-        email_code_pepper="x" * 32,
-        smtp_host="smtp.example.com",
-        smtp_from_email="login@example.com",
-        smtp_smoke_recipient="smtp-smoke@example.com",
+    expected_wait = (
+        config.smtp_timeout_seconds * main_module.EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES
+        + main_module.EMAIL_DELIVERY_VERIFICATION_GRACE_SECONDS
     )
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def preflight(_sender):
-        started.set()
-        await release.wait()
-
-    monkeypatch.setattr(main_module, "settings", config)
-    monkeypatch.setattr(email_sender.SMTPEmailSender, "preflight", preflight)
-
-    health_task = asyncio.create_task(_get("/health/email-delivery"))
-    await started.wait()
-    email_sender.invalidate_smtp_verification()
-    release.set()
-    health = await health_task
-
-    assert health.status_code == 503
-    assert health.json()["status"] == "not_ready"
-    assert email_sender.is_smtp_verified() is False
+    assert expected_wait > config.smtp_timeout_seconds * main_module.EMAIL_DELIVERY_VERIFICATION_SMTP_PHASES
+    wait_for_verification.assert_awaited_once_with(expected_wait)
+    preflight.assert_not_awaited()
 
 
 async def test_lifespan_starts_acceptance_preflight_monitor_when_email_login_is_ready(monkeypatch):

@@ -17,8 +17,10 @@ server generates the `client_id` (and a `client_secret`); you supply a name and 
 **exact** redirect uris your app will use.
 
 Prerequisites (operator, once): the IdP is running with migrations applied and an admin
-user exists (`scripts/init_admin.py` bootstraps the first superuser and a sample app —
-**change its default password**).
+user exists. `scripts/init_admin.py` requires an explicit `AUTH_ADMIN_EMAIL`, creates no
+fixed password, and can register the first sample app. The same normalized email becomes
+the administrator when it later signs in through an enabled provider. See
+[SELF_HOSTING.md](./SELF_HOSTING.md#4-创建首个管理员和应用).
 
 Get an admin access token (log in as a superuser), then:
 
@@ -57,7 +59,7 @@ Save the `client_id`. Notes:
 Install the shared validator SDK:
 
 ```bash
-pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@main#subdirectory=auth-client"
+pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.0#subdirectory=auth-client"
 ```
 
 Configure one validator from env and expose a thin `get_current_user` that returns **your
@@ -90,7 +92,7 @@ AUTH_SERVICE_CLIENT_ID=app_xxxxxxxxxxxxxxxx
 Install the framework-neutral browser SDK (it builds itself on install):
 
 ```bash
-npm install git+https://github.com/HyxiaoGe/auth-client-web.git
+npm install git+https://github.com/HyxiaoGe/auth-client-web.git#v0.2.0
 ```
 
 Wire four pieces (see

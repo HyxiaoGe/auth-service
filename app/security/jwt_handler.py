@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -184,24 +185,46 @@ def get_jwks() -> dict:
     }
 
 
+def _write_new_key(path: Path, content: bytes, mode: int) -> None:
+    """以排他方式创建密钥文件，避免覆盖或短暂暴露宽松权限。"""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    try:
+        os.fchmod(descriptor, mode)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def generate_rsa_keys(private_path: str = "keys/private.pem", public_path: str = "keys/public.pem"):
-    """Generate RSA key pair and save to files."""
+    """生成 RSA 密钥对；目标文件已存在时拒绝覆盖。"""
+    private_file = Path(private_path)
+    public_file = Path(public_path)
+    if private_file.exists() or public_file.exists():
+        raise FileExistsError("JWT key files already exist; refusing to overwrite them")
+
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_key = private_key.public_key()
 
-    Path(private_path).parent.mkdir(parents=True, exist_ok=True)
+    private_file.parent.mkdir(parents=True, exist_ok=True)
+    public_file.parent.mkdir(parents=True, exist_ok=True)
+    private_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_bytes = public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
 
-    Path(private_path).write_bytes(
-        private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.PKCS8,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-    )
-    Path(public_path).write_bytes(
-        public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo,
-        )
-    )
+    _write_new_key(private_file, private_bytes, 0o600)
+    try:
+        _write_new_key(public_file, public_bytes, 0o644)
+    except Exception:
+        private_file.unlink(missing_ok=True)
+        raise
     print(f"RSA keys generated: {private_path}, {public_path}")

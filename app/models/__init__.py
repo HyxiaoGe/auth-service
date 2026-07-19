@@ -57,7 +57,7 @@ class Application(Base):
     __tablename__ = "applications"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(100))  # e.g. "MovieMate", "Prism"
+    name: Mapped[str] = mapped_column(String(100))  # e.g. "Web App", "Admin Console"
     description: Mapped[str | None] = mapped_column(Text)
     client_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     client_secret: Mapped[str] = mapped_column(String(128))

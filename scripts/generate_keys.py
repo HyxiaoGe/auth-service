@@ -10,7 +10,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.security.jwt_handler import generate_rsa_keys
 
 if __name__ == "__main__":
-    generate_rsa_keys()
+    try:
+        generate_rsa_keys()
+    except FileExistsError as exc:
+        print(f"❌ {exc}", file=sys.stderr)
+        print("   为避免令牌和 JWKS 突变，请先备份并显式移走旧密钥。", file=sys.stderr)
+        raise SystemExit(1) from exc
     print("✅ RSA key pair generated successfully!")
     print("   Private key: keys/private.pem")
     print("   Public key:  keys/public.pem")

@@ -45,11 +45,7 @@ def upgrade() -> None:
     )
     op.create_index("ix_user_preferences_user_id", "user_preferences", ["user_id"])
 
-    # Set seanfield767@gmail.com as superuser
-    op.execute("UPDATE users SET is_superuser = true WHERE email = 'seanfield767@gmail.com'")
-
 
 def downgrade() -> None:
-    op.execute("UPDATE users SET is_superuser = false WHERE email = 'seanfield767@gmail.com'")
     op.drop_index("ix_user_preferences_user_id", table_name="user_preferences")
     op.drop_table("user_preferences")

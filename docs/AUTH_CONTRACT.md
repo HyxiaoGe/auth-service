@@ -109,7 +109,7 @@ schema compatibility but is always `false`; calls without both query parameters 
 
 The Origin must be an allowlisted HTTPS or loopback HTTP web origin, exactly equal the
 registered redirect URI's origin, and be **schemeful same-site** with `AUTH_BASE_URL`.
-Sibling subdomains such as `authmail.seanfield.org` and `dev.seanfield.org` are allowed;
+Sibling subdomains such as `auth.example.com` and `app.example.com` are allowed;
 `auth.example.com` and `app.other.com`, different schemes, different IPs, `app://-`, and
 `Origin: null` are rejected. Registrable sites use an offline Public Suffix List including
 private suffixes, so `co.uk` and multi-tenant domains such as `github.io` are not merged
@@ -127,8 +127,8 @@ Request:
 
 ```json
 {
-  "client_id": "fusion",
-  "redirect_uri": "https://fusion.example/auth/callback",
+  "client_id": "example-web",
+  "redirect_uri": "https://app.example.com/auth/callback",
   "response_type": "code",
   "state": "<32+ character base64url app state>",
   "code_challenge": "<43 character base64url S256 challenge>",

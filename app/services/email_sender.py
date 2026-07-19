@@ -227,7 +227,7 @@ class ResendEmailSender:
             payload,
             hashlib.sha256,
         ).hexdigest()
-        return f"fusion-{message_type}-{digest}"
+        return f"auth-service-{message_type}-{digest}"
 
     def _preflight_cache_fingerprint(self) -> str:
         return self._idempotency_key(
@@ -328,7 +328,7 @@ class ResendEmailSender:
         if self._preflight_cache_valid():
             return
         if self._preflight_idempotency_key is None:
-            self._preflight_idempotency_key = f"fusion-preflight-{secrets.token_hex(16)}"
+            self._preflight_idempotency_key = f"auth-service-preflight-{secrets.token_hex(16)}"
         try:
             await self._send(
                 recipient=self.config.smtp_smoke_recipient,

@@ -16,7 +16,8 @@ from app.database import get_db
 from app.schemas import LoginRequest, RegisterRequest, TokenResponse
 from app.services import auth_service
 
-INTERNAL_AUTH_HEADER = "X-Fusion-Internal-Auth"
+INTERNAL_AUTH_HEADER = "X-Auth-Service-Internal"
+LEGACY_INTERNAL_AUTH_HEADER = "X-Fusion-Internal-Auth"
 MAX_PASSWORD_AUTH_BODY_BYTES = 16 * 1024
 
 
@@ -76,7 +77,10 @@ def create_router(internal_token: str, email_prefix: str, email_domain: str) -> 
     expected_token = internal_token.encode("utf-8")
 
     async def require_internal_auth(request: Request) -> None:
-        provided_token = request.headers.get(INTERNAL_AUTH_HEADER, "").encode("utf-8")
+        provided_value = request.headers.get(INTERNAL_AUTH_HEADER)
+        if provided_value is None:
+            provided_value = request.headers.get(LEGACY_INTERNAL_AUTH_HEADER, "")
+        provided_token = provided_value.encode("utf-8")
         if not compare_digest(provided_token, expected_token):
             raise _not_found()
 

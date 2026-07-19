@@ -6,6 +6,18 @@ from pydantic import ValidationError
 from app.config import Settings
 
 
+def test_default_config_uses_neutral_local_development_values():
+    settings = Settings()
+
+    assert settings.database_url == "postgresql+asyncpg://auth:auth@localhost:5432/auth"
+    assert settings.database_url_sync == "postgresql://auth:auth@localhost:5432/auth"
+    assert settings.redis_url == "redis://localhost:6379/0"
+    assert settings.auth_base_url == "http://localhost:8100"
+    assert settings.smtp_from_name == "Auth Service"
+    assert "192.168." not in settings.cors_origins
+    assert "seanfield" not in settings.cors_origins
+
+
 def test_password_auth_is_disabled_by_default():
     settings = Settings()
 

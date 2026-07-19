@@ -2,7 +2,7 @@
  * Example: browser (Next.js / React) SSO integration with the shared auth-client-web SDK.
  *
  * Install:
- *   npm install git+https://github.com/HyxiaoGe/auth-client-web.git
+ *   npm install git+https://github.com/HyxiaoGe/auth-client-web.git#v0.2.0
  *
  * The SDK is framework-neutral and owns the whole token lifecycle: the PKCE login
  * redirect, the state-validated callback exchange, on-demand + coalesced refresh, and

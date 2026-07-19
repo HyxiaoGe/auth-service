@@ -4,7 +4,7 @@ These mint RS256 tokens with a locally-generated RSA keypair and inject a matchi
 fake JWKS (kid 'auth-key-1', mirroring Auth Service) straight into the validator's
 JWKS cache, so no network / running Auth Service is needed.
 
-Context: a consumer (fusion-api) must reject tokens whose `type` claim is not
+Context: a consumer API must reject tokens whose `type` claim is not
 "access" (e.g. refresh tokens presented on protected routes). The stock validator
 did not enforce this. The check is opt-in via `require_token_type` and defaults to
 None (no check) so existing consumers (audio-web) are unaffected.

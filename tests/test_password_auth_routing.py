@@ -278,3 +278,24 @@ async def test_internal_password_auth_accepts_correct_token(path, monkeypatch):
     assert response.status_code == (201 if path.endswith("register") else 200)
     assert response.json()["access_token"] == "access"
     assert calls[-1][0] == "login"
+
+
+@pytest.mark.asyncio
+async def test_internal_password_auth_keeps_legacy_header_compatibility(monkeypatch):
+    async def fake_login_user(payload, request, db):
+        return {
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "expires_in": 900,
+        }
+
+    monkeypatch.setattr(password_auth.auth_service, "login_user", fake_login_user)
+    transport = httpx.ASGITransport(app=_internal_app())
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/auth/login",
+            headers={password_auth.LEGACY_INTERNAL_AUTH_HEADER: INTERNAL_TOKEN},
+            json={"email": "fusion-perf+case@seanfield.org", "password": "secret123"},
+        )
+
+    assert response.status_code == 200

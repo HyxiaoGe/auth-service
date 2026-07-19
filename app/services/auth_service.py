@@ -243,7 +243,7 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
         # revokes the user's tokens -- but ONLY for the offending app (stored.app_client_id).
         # Other first-party apps hold independent rotation lineages; nuking them too turns one
         # app's lost-rotation replay into a cross-app spurious logout (observed live: an audio
-        # replay collaterally revoked the same user's valid fusion token). A deliberate
+        # replay collaterally revoked the same user's valid token for another application). A deliberate
         # account-wide logout still sweeps every app via the /logout path (app_client_id=None).
         if _within_rotation_grace(stored, user) and not await _logout_after_rotation(stored):
             stored.grace_consumed = True  # single-use gate (atomic under the row lock above)

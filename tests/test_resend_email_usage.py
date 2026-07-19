@@ -141,7 +141,7 @@ async def test_resend_login_and_preflight_capture_sanitized_latest_usage(monkeyp
     assert posts[0][1] == "https://api.resend.com/emails"
     assert posts[0][2]["headers"]["Authorization"] == "Bearer re_test_secret"
     assert posts[0][2]["headers"]["User-Agent"] == "auth-service/1.0"
-    assert posts[0][2]["headers"]["Idempotency-Key"].startswith("fusion-login-otp-")
+    assert posts[0][2]["headers"]["Idempotency-Key"].startswith("auth-service-login-otp-")
     assert "person@example.com" not in posts[0][2]["headers"]["Idempotency-Key"]
     assert "123456" not in posts[0][2]["headers"]["Idempotency-Key"]
     assert posts[0][2]["json"]["to"] == ["person@example.com"]
@@ -149,7 +149,7 @@ async def test_resend_login_and_preflight_capture_sanitized_latest_usage(monkeyp
     assert "123456" in posts[0][2]["json"]["text"]
     assert posts[1][2]["json"]["to"] == ["delivered+auth-service@resend.dev"]
     assert posts[1][2]["json"]["tags"] == [{"name": "message_type", "value": "preflight"}]
-    assert posts[1][2]["headers"]["Idempotency-Key"].startswith("fusion-preflight-")
+    assert posts[1][2]["headers"]["Idempotency-Key"].startswith("auth-service-preflight-")
     assert "部署预检" in posts[1][2]["json"]["subject"]
     assert "123456" not in posts[1][2]["json"]["text"]
 

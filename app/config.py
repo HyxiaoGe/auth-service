@@ -16,8 +16,8 @@ class Settings(BaseSettings):
     app_debug: bool = True
 
     # Database
-    database_url: str = "postgresql+asyncpg://sean:sean_auth_pass@localhost:5432/auth"
-    database_url_sync: str = "postgresql://sean:sean_auth_pass@localhost:5432/auth"
+    database_url: str = "postgresql+asyncpg://auth:auth@localhost:5432/auth"
+    database_url_sync: str = "postgresql://auth:auth@localhost:5432/auth"
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"
@@ -87,7 +87,7 @@ class Settings(BaseSettings):
     smtp_username: str = ""
     smtp_password: str = ""
     smtp_from_email: str = ""
-    smtp_from_name: str = "Sean Auth"
+    smtp_from_name: str = "Auth Service"
     smtp_smoke_recipient: str = ""
     smtp_starttls: bool = True
     smtp_use_ssl: bool = False
@@ -114,12 +114,10 @@ class Settings(BaseSettings):
     session_absolute_max_seconds: int = 2592000  # 30-day hard cap regardless of activity
 
     # Auth service base URL
-    auth_base_url: str = "http://192.168.1.10:8100"
+    auth_base_url: str = "http://localhost:8100"
 
     # CORS
-    cors_origins: str = (
-        "http://localhost:3000,http://localhost:3001,http://localhost:5173,http://192.168.1.10:3004,app://-"
-    )
+    cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173,app://-"
 
     @property
     def cors_origin_list(self) -> list[str]:

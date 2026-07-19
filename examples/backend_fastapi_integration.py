@@ -2,7 +2,7 @@
 Example: backend (FastAPI) integration with the shared auth-client SDK.
 
 Install:
-    pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@main#subdirectory=auth-client"
+    pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.0#subdirectory=auth-client"
 
 The SDK (`auth-client`) does exactly one thing: verify an RS256 access token against the
 IdP's JWKS and return an `AuthenticatedUser`. Everything else is your app's job:

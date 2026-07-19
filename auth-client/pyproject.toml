@@ -1,17 +1,25 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "auth-client"
 version = "0.2.0"
 description = "Lightweight JWT validator for services using Auth Service"
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Auth Service contributors" }]
+keywords = ["authentication", "jwt", "jwks", "fastapi"]
 dependencies = [
     "PyJWT[crypto]>=2.8.0",
     "httpx>=0.25.0",
     "cryptography>=41.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/HyxiaoGe/auth-service"
+Documentation = "https://github.com/HyxiaoGe/auth-service/tree/main/auth-client"
 
 [project.optional-dependencies]
 fastapi = [

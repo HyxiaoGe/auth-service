@@ -24,18 +24,21 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            auth-client/pyproject.toml
 
       - name: Install test dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e "./auth-client[fastapi]"
 
       - name: Architecture check
         run: python scripts/check_architecture.py
 
       - name: Test
-        run: python -m pytest -q
+        run: python -m pytest -q tests auth-client/tests
 
       - name: Lint
-        run: ~/.local/bin/ruff check .
+        run: python -m ruff check .
 
   deploy:
     needs: check

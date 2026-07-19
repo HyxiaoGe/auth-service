@@ -1,0 +1,67 @@
+name: 缺陷报告
+description: 报告可复现的功能、兼容性或稳定性问题
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你帮助改进 Auth Service。安全漏洞请使用 Security 页面中的私密报告入口，不要填写此表单。
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已搜索现有 Issue，未发现重复报告。
+          required: true
+        - label: 此报告不包含令牌、密钥、验证码、个人数据或其他敏感信息。
+          required: true
+        - label: 此问题不是需要私密披露的安全漏洞。
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      description: 请填写版本号、提交 SHA 或镜像标签。
+      placeholder: 例如 main@abcdef1
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 运行方式
+      options:
+        - Docker Compose
+        - 本地 Python
+        - Kubernetes 或其他容器平台
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 请说明实际行为、预期行为和影响范围。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小复现步骤
+      description: 请提供可重复执行的步骤，并对所有敏感值做脱敏处理。
+      placeholder: |
+        1. 使用配置……
+        2. 调用接口……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 可选。请先移除令牌、Cookie、密钥、邮箱和其他个人信息。
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 操作系统、Python 版本、数据库版本及其他有助于定位的信息。

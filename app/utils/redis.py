@@ -80,6 +80,12 @@ EMAIL_RATE_SEND_GLOBAL_KEY = "email_rate_send_global"
 EMAIL_RATE_AUTHORIZE_IP_PREFIX = "email_rate_authorize_ip:"
 EMAIL_RATE_AUTHORIZE_CLIENT_PREFIX = "email_rate_authorize_client:"
 EMAIL_RATE_AUTHORIZE_GLOBAL_KEY = "email_rate_authorize_global"
+EMAIL_RATE_SEND_REQUEST_IP_PREFIX = "email_rate_send_request_ip:"
+EMAIL_RATE_SEND_REQUEST_GLOBAL_KEY = "email_rate_send_request_global"
+EMAIL_RATE_SEND_REQUEST_FLOW_PREFIX = "email_rate_send_request_flow:"
+EMAIL_RATE_VERIFY_REQUEST_IP_PREFIX = "email_rate_verify_request_ip:"
+EMAIL_RATE_VERIFY_REQUEST_GLOBAL_KEY = "email_rate_verify_request_global"
+EMAIL_RATE_VERIFY_FLOW_PREFIX = "email_rate_verify_flow:"
 
 
 def _remaining_ttl(ttl: int, fallback: int) -> int:
@@ -163,6 +169,74 @@ async def acquire_email_authorize_slot(
             (f"{EMAIL_RATE_AUTHORIZE_CLIENT_PREFIX}{client_digest}", client_limit),
             (EMAIL_RATE_AUTHORIZE_GLOBAL_KEY, global_limit),
         ),
+        window_seconds=window_seconds,
+    )
+
+
+async def acquire_email_verify_request_slot(
+    ip_digest: str,
+    *,
+    window_seconds: int,
+    ip_limit: int,
+    global_limit: int,
+) -> tuple[bool, int]:
+    """在读取 flow 或 OTP 前执行可信客户端 IP 与全局固定窗口门禁。"""
+    r = await get_redis()
+    return await _acquire_fixed_window_slot(
+        r,
+        (
+            (f"{EMAIL_RATE_VERIFY_REQUEST_IP_PREFIX}{ip_digest}", ip_limit),
+            (EMAIL_RATE_VERIFY_REQUEST_GLOBAL_KEY, global_limit),
+        ),
+        window_seconds=window_seconds,
+    )
+
+
+async def acquire_email_send_request_slot(
+    ip_digest: str,
+    *,
+    window_seconds: int,
+    ip_limit: int,
+    global_limit: int,
+) -> tuple[bool, int]:
+    """在读取 send flow 前执行可信客户端 IP 与全局固定窗口门禁。"""
+    r = await get_redis()
+    return await _acquire_fixed_window_slot(
+        r,
+        (
+            (f"{EMAIL_RATE_SEND_REQUEST_IP_PREFIX}{ip_digest}", ip_limit),
+            (EMAIL_RATE_SEND_REQUEST_GLOBAL_KEY, global_limit),
+        ),
+        window_seconds=window_seconds,
+    )
+
+
+async def acquire_email_send_request_flow_slot(
+    flow_id: str,
+    *,
+    window_seconds: int,
+    flow_limit: int,
+) -> tuple[bool, int]:
+    """仅对已完成浏览器绑定校验的 send flow 执行独立固定窗口门禁。"""
+    r = await get_redis()
+    return await _acquire_fixed_window_slot(
+        r,
+        ((f"{EMAIL_RATE_SEND_REQUEST_FLOW_PREFIX}{flow_id}", flow_limit),),
+        window_seconds=window_seconds,
+    )
+
+
+async def acquire_email_verify_flow_slot(
+    flow_id: str,
+    *,
+    window_seconds: int,
+    flow_limit: int,
+) -> tuple[bool, int]:
+    """仅对已完成浏览器绑定校验的 flow 执行独立固定窗口门禁。"""
+    r = await get_redis()
+    return await _acquire_fixed_window_slot(
+        r,
+        ((f"{EMAIL_RATE_VERIFY_FLOW_PREFIX}{flow_id}", flow_limit),),
         window_seconds=window_seconds,
     )
 

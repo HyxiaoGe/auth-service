@@ -191,6 +191,24 @@ def _headless_error(
     return _headless_json(content, status_code=status_code, headers=headers)
 
 
+def _headless_verify_rate_limited(retry_after: int) -> JSONResponse:
+    return _headless_error(
+        "rate_limited",
+        "too many verification attempts",
+        status_code=429,
+        retry_after=retry_after,
+    )
+
+
+def _headless_send_request_rate_limited(retry_after: int) -> JSONResponse:
+    return _headless_error(
+        "rate_limited",
+        "too many email send requests",
+        status_code=429,
+        retry_after=retry_after,
+    )
+
+
 def _headless_origin_matches(request: Request, redirect_uri: str) -> bool:
     origin = request.headers.get("origin")
     return bool(
@@ -238,6 +256,9 @@ async def _expired_headless_email_flow_response(
     request: Request,
     flow_id: str,
     db: AsyncSession,
+    *,
+    enforce_send_request_rate_limit: bool = False,
+    enforce_verify_rate_limit: bool = False,
 ) -> JSONResponse | None:
     origin = request.headers.get("origin")
     if not _headless_web_origin_allowed(origin) or origin not in settings.cors_origin_list:
@@ -250,6 +271,20 @@ async def _expired_headless_email_flow_response(
     )
     if recovery is None or not _headless_origin_matches(request, recovery["redirect_uri"]):
         return None
+    if enforce_send_request_rate_limit:
+        allowed, retry_after = await email_login_service.acquire_email_send_request_flow_slot(
+            flow_id,
+            config=settings,
+        )
+        if not allowed:
+            return _headless_send_request_rate_limited(retry_after)
+    if enforce_verify_rate_limit:
+        allowed, retry_after = await email_login_service.acquire_email_verification_flow_slot(
+            flow_id,
+            config=settings,
+        )
+        if not allowed:
+            return _headless_verify_rate_limited(retry_after)
     if await _resolve_authorize_app(recovery["client_id"], recovery["redirect_uri"], db) is None:
         return None
     return _headless_error(
@@ -352,14 +387,31 @@ async def send_email_headless(
     db: AsyncSession = Depends(get_db),
     sender: EmailSender = Depends(get_email_sender),
 ):
+    allowed, retry_after = await email_login_service.acquire_email_send_request_slot(
+        _email_client_ip(request),
+        config=settings,
+    )
+    if not allowed:
+        return _headless_send_request_rate_limited(retry_after)
     flow = await _validated_headless_email_flow(request, payload.flow_id)
     if flow is None:
-        expired = await _expired_headless_email_flow_response(request, payload.flow_id, db)
+        expired = await _expired_headless_email_flow_response(
+            request,
+            payload.flow_id,
+            db,
+            enforce_send_request_rate_limit=True,
+        )
         return expired or _headless_error(
             "invalid_interaction",
             "email login interaction is invalid",
             status_code=403,
         )
+    allowed, retry_after = await email_login_service.acquire_email_send_request_flow_slot(
+        payload.flow_id,
+        config=settings,
+    )
+    if not allowed:
+        return _headless_send_request_rate_limited(retry_after)
     if not settings.email_headless_login_enabled:
         return _headless_error(
             "delivery_unavailable",
@@ -411,14 +463,31 @@ async def verify_email_headless(
     payload: EmailHeadlessVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ):
+    allowed, retry_after = await email_login_service.acquire_email_verification_request_slot(
+        _email_client_ip(request),
+        config=settings,
+    )
+    if not allowed:
+        return _headless_verify_rate_limited(retry_after)
     flow = await _validated_headless_email_flow(request, payload.flow_id)
     if flow is None:
-        expired = await _expired_headless_email_flow_response(request, payload.flow_id, db)
+        expired = await _expired_headless_email_flow_response(
+            request,
+            payload.flow_id,
+            db,
+            enforce_verify_rate_limit=True,
+        )
         return expired or _headless_error(
             "invalid_interaction",
             "email login interaction is invalid",
             status_code=403,
         )
+    allowed, retry_after = await email_login_service.acquire_email_verification_flow_slot(
+        payload.flow_id,
+        config=settings,
+    )
+    if not allowed:
+        return _headless_verify_rate_limited(retry_after)
     if not settings.email_headless_login_enabled or not settings.email_login_enabled:
         return _headless_error(
             "delivery_unavailable",

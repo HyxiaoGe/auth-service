@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     email_authorize_rate_limit_per_ip: int = Field(default=60, gt=0)
     email_authorize_rate_limit_per_client: int = Field(default=2000, gt=0)
     email_authorize_rate_limit_global: int = Field(default=10000, gt=0)
+    email_send_request_rate_limit_per_ip: int = Field(default=120, gt=0)
+    email_send_request_rate_limit_per_flow: int = Field(default=15, gt=0)
+    email_send_request_rate_limit_global: int = Field(default=10000, gt=0)
+    email_verify_rate_limit_per_ip: int = Field(default=120, gt=0)
+    email_verify_rate_limit_per_flow: int = Field(default=15, gt=0)
+    email_verify_rate_limit_global: int = Field(default=10000, gt=0)
     email_rate_limit_window_seconds: int = Field(default=3600, gt=0)
     email_flow_max_per_browser: int = Field(default=5, gt=0)
 
@@ -149,6 +155,16 @@ class Settings(BaseSettings):
             raise ValueError("email_code_ttl_seconds must be <= email_flow_ttl_seconds")
         if self.email_flow_recovery_ttl_seconds < self.email_flow_ttl_seconds:
             raise ValueError("email_flow_recovery_ttl_seconds must be >= email_flow_ttl_seconds")
+        if self.email_send_request_rate_limit_per_flow < self.email_rate_limit_per_flow:
+            raise ValueError(
+                "email_send_request_rate_limit_per_flow must be >= email_rate_limit_per_flow"
+            )
+        minimum_verify_attempts = self.email_code_max_attempts * self.email_rate_limit_per_flow
+        if self.email_verify_rate_limit_per_flow < minimum_verify_attempts:
+            raise ValueError(
+                "email_verify_rate_limit_per_flow must be >= "
+                "email_code_max_attempts * email_rate_limit_per_flow"
+            )
         if self.smtp_starttls and self.smtp_use_ssl:
             raise ValueError("smtp_starttls and smtp_use_ssl are mutually exclusive")
         if self.email_login_enabled and len(self.email_code_pepper) < 32:

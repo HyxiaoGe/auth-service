@@ -439,7 +439,7 @@ async def test_headless_send_rejects_bad_binding_without_creating_otp(monkeypatc
     assert [key async for key in fake_redis.scan_iter("email_otp:*")] == []
 
 
-async def test_headless_send_returns_structured_rate_limit_and_unavailable(monkeypatch):
+async def test_headless_send_returns_structured_rate_limit_and_unavailable(monkeypatch, fake_redis):
     config = _settings(email_rate_limit_per_flow=1, email_code_resend_seconds=60)
     started = await _start_flow(config)
     monkeypatch.setattr(auth, "settings", config)
@@ -457,9 +457,67 @@ async def test_headless_send_returns_structured_rate_limit_and_unavailable(monke
     assert first.status_code == 202
     assert limited.status_code == 429
     assert _json(limited)["error"] == "rate_limited"
+    assert _json(limited)["error_description"] == "too many verification code requests"
     assert int(limited.headers["retry-after"]) == _json(limited)["retry_after"]
+    assert await get_email_flow(started.flow_id) is not None
+    assert await fake_redis.get(f"email_rate_flow:{started.flow_id}") == "1"
+    assert await fake_redis.get(f"email_rate_send_request_flow:{started.flow_id}") == "3"
     assert unavailable.status_code == 503
     assert _json(unavailable)["error"] == "delivery_unavailable"
+
+
+async def test_headless_send_limits_missing_flow_before_redis_lookup_without_flow_bucket(monkeypatch, fake_redis):
+    config = _settings(email_send_request_rate_limit_per_ip=1, email_send_request_rate_limit_global=100)
+    monkeypatch.setattr(auth, "settings", config)
+    request = _request(csrf_token="x" * 43, ip="203.0.113.8")
+    payload = EmailHeadlessSendRequest(flow_id="missing-flow-id-00000000", email="user@example.com")
+
+    first = await auth.send_email_headless(request, payload, db=_DB(), sender=_Sender())
+    limited = await auth.send_email_headless(request, payload, db=_DB(), sender=_Sender())
+
+    assert first.status_code == 403
+    assert limited.status_code == 429
+    assert _json(limited)["error"] == "rate_limited"
+    assert _json(limited)["error_description"] == "too many email send requests"
+    assert int(limited.headers["retry-after"]) == _json(limited)["retry_after"]
+    request_keys = [key async for key in fake_redis.scan_iter("email_rate_send_request*")]
+    assert len(request_keys) == 2
+    assert sorted([await fake_redis.get(key) for key in request_keys]) == ["1", "1"]
+    assert [key async for key in fake_redis.scan_iter("email_rate_send_request_flow:*")] == []
+
+
+async def test_headless_send_limits_live_flow_before_feature_db_or_otp(monkeypatch, fake_redis):
+    config = _settings(
+        email_rate_limit_per_flow=1,
+        email_send_request_rate_limit_per_flow=1,
+    )
+    started = await _start_flow(config)
+    monkeypatch.setattr(auth, "settings", config)
+    request = _request(
+        cookie_name=started.cookie_name,
+        cookie_value=started.cookie_value,
+        csrf_token=started.csrf_token,
+    )
+    payload = EmailHeadlessSendRequest(flow_id=started.flow_id, email="user@example.com")
+
+    unavailable = await auth.send_email_headless(
+        request,
+        payload,
+        db=_DB([_User()]),
+        sender=DisabledEmailSender(),
+    )
+    limited = await auth.send_email_headless(
+        request,
+        payload,
+        db=_DB([_User()]),
+        sender=_Sender(),
+    )
+
+    assert unavailable.status_code == 503
+    assert limited.status_code == 429
+    assert _json(limited)["error_description"] == "too many email send requests"
+    assert await fake_redis.get(f"email_rate_send_request_flow:{started.flow_id}") == "1"
+    assert await fake_redis.exists(f"email_otp:{started.flow_id}") == 0
 
 
 async def test_headless_verify_returns_only_authorization_code_and_starts_sso_session(monkeypatch):
@@ -509,6 +567,177 @@ async def test_headless_verify_returns_only_authorization_code_and_starts_sso_se
     session = await get_session(sid)
     assert session["user_id"] == str(user.id)
     assert session["amr"] == ["email_otp"]
+
+
+async def test_headless_verify_limits_missing_flow_by_client_ip_before_flow_or_otp_lookup(monkeypatch, fake_redis):
+    config = _settings(email_verify_rate_limit_per_ip=1, email_verify_rate_limit_global=100)
+    monkeypatch.setattr(auth, "settings", config)
+    request = _request(csrf_token="x" * 43, ip="203.0.113.8")
+    payload = EmailHeadlessVerifyRequest(flow_id="missing-flow-id-00000000", code="123456")
+
+    first = await auth.verify_email_headless(request, payload, db=_DB())
+    limited = await auth.verify_email_headless(request, payload, db=_DB())
+
+    assert first.status_code == 403
+    assert limited.status_code == 429
+    assert _json(limited)["error"] == "rate_limited"
+    assert _json(limited)["error_description"] == "too many verification attempts"
+    assert int(limited.headers["retry-after"]) == _json(limited)["retry_after"]
+    request_keys = [key async for key in fake_redis.scan_iter("email_rate_verify_request*")]
+    assert len(request_keys) == 2
+    assert sorted([await fake_redis.get(key) for key in request_keys]) == ["1", "1"]
+    assert [key async for key in fake_redis.scan_iter("email_rate_verify_flow:*")] == []
+
+
+async def test_headless_verify_global_rejection_does_not_increment_new_ip_bucket(monkeypatch, fake_redis):
+    config = _settings(email_verify_rate_limit_per_ip=100, email_verify_rate_limit_global=1)
+    monkeypatch.setattr(auth, "settings", config)
+    payload = EmailHeadlessVerifyRequest(flow_id="missing-flow-id-00000000", code="123456")
+
+    first = await auth.verify_email_headless(
+        _request(csrf_token="x" * 43, ip="203.0.113.8"),
+        payload,
+        db=_DB(),
+    )
+    limited = await auth.verify_email_headless(
+        _request(csrf_token="x" * 43, ip="203.0.113.9"),
+        payload,
+        db=_DB(),
+    )
+
+    assert first.status_code == 403
+    assert limited.status_code == 429
+    ip_keys = [key async for key in fake_redis.scan_iter("email_rate_verify_request_ip:*")]
+    assert len(ip_keys) == 1
+    assert await fake_redis.get("email_rate_verify_request_global") == "1"
+
+
+async def test_headless_verify_limits_bound_flow_before_application_lookup_without_send(monkeypatch, fake_redis):
+    config = _settings(
+        email_code_max_attempts=1,
+        email_rate_limit_per_flow=1,
+        email_verify_rate_limit_per_flow=1,
+    )
+    started = await _start_flow(config)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "settings", config)
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+    request = _request(
+        cookie_name=started.cookie_name,
+        cookie_value=started.cookie_value,
+        csrf_token=started.csrf_token,
+    )
+    payload = EmailHeadlessVerifyRequest(flow_id=started.flow_id, code="123456")
+
+    no_otp = await auth.verify_email_headless(request, payload, db=_DB())
+    limited = await auth.verify_email_headless(request, payload, db=_DB())
+
+    assert no_otp.status_code == 400
+    assert _json(no_otp)["error"] == "invalid_code"
+    assert limited.status_code == 429
+    assert _json(limited)["error"] == "rate_limited"
+    assert _json(limited)["error_description"] == "too many verification attempts"
+    assert resolve_app.await_count == 1
+    assert await fake_redis.get(f"email_rate_verify_flow:{started.flow_id}") == "1"
+
+
+async def test_headless_verify_keeps_otp_attempt_lockout_and_generic_failure(monkeypatch, fake_redis):
+    config = _settings(
+        email_code_max_attempts=2,
+        email_verify_rate_limit_per_ip=100,
+        email_verify_rate_limit_per_flow=100,
+        email_verify_rate_limit_global=100,
+    )
+    started = await _start_flow(config)
+    user = _User()
+    sender = _Sender()
+    db = _DB([user])
+    await email_login_service.request_login_code(
+        flow_id=started.flow_id,
+        flow_cookie=started.cookie_value,
+        email=user.email,
+        client_ip="203.0.113.8",
+        db=db,
+        sender=sender,
+        config=config,
+    )
+    monkeypatch.setattr(auth, "settings", config)
+    monkeypatch.setattr(auth, "_resolve_authorize_app", _active_app)
+    request = _request(
+        cookie_name=started.cookie_name,
+        cookie_value=started.cookie_value,
+        csrf_token=started.csrf_token,
+    )
+    wrong_code = "000000" if sender.sent[0][1] != "000000" else "999999"
+
+    first_wrong = await auth.verify_email_headless(
+        request,
+        EmailHeadlessVerifyRequest(flow_id=started.flow_id, code=wrong_code),
+        db=db,
+    )
+    second_wrong = await auth.verify_email_headless(
+        request,
+        EmailHeadlessVerifyRequest(flow_id=started.flow_id, code=wrong_code),
+        db=db,
+    )
+    correct_after_lockout = await auth.verify_email_headless(
+        request,
+        EmailHeadlessVerifyRequest(flow_id=started.flow_id, code=sender.sent[0][1]),
+        db=db,
+    )
+
+    assert [first_wrong.status_code, second_wrong.status_code, correct_after_lockout.status_code] == [400, 400, 400]
+    assert {_json(response)["error"] for response in (first_wrong, second_wrong, correct_after_lockout)} == {
+        "invalid_code"
+    }
+    assert await fake_redis.exists(f"email_otp:{started.flow_id}") == 0
+
+
+async def test_headless_verify_accepts_correct_code_at_configured_flow_limit(monkeypatch):
+    config = _settings(
+        email_code_max_attempts=2,
+        email_rate_limit_per_flow=1,
+        email_verify_rate_limit_per_ip=100,
+        email_verify_rate_limit_per_flow=2,
+        email_verify_rate_limit_global=100,
+    )
+    started = await _start_flow(config)
+    user = _User()
+    sender = _Sender()
+    db = _DB([user])
+    await email_login_service.request_login_code(
+        flow_id=started.flow_id,
+        flow_cookie=started.cookie_value,
+        email=user.email,
+        client_ip="203.0.113.8",
+        db=db,
+        sender=sender,
+        config=config,
+    )
+    monkeypatch.setattr(auth, "settings", config)
+    monkeypatch.setattr(auth.session_service, "settings", config)
+    monkeypatch.setattr(auth, "_resolve_authorize_app", _active_app)
+    request = _request(
+        cookie_name=started.cookie_name,
+        cookie_value=started.cookie_value,
+        csrf_token=started.csrf_token,
+    )
+    wrong_code = "000000" if sender.sent[0][1] != "000000" else "999999"
+
+    wrong = await auth.verify_email_headless(
+        request,
+        EmailHeadlessVerifyRequest(flow_id=started.flow_id, code=wrong_code),
+        db=db,
+    )
+    success = await auth.verify_email_headless(
+        request,
+        EmailHeadlessVerifyRequest(flow_id=started.flow_id, code=sender.sent[0][1]),
+        db=db,
+    )
+
+    assert wrong.status_code == 400
+    assert success.status_code == 200
+    assert set(_json(success)) == {"code", "state", "expires_in"}
 
 
 async def test_headless_verify_bad_origin_or_csrf_does_not_consume_code(monkeypatch):
@@ -588,6 +817,75 @@ async def test_headless_verify_expired_bound_flow_returns_recoverable_login_requ
         "error_description": "email login flow expired, please sign in again",
         "state": "RECOVER_STATE",
     }
+
+
+async def test_headless_send_limits_recovery_before_application_without_consuming_verify_flow(monkeypatch, fake_redis):
+    config = _settings(
+        email_rate_limit_per_flow=1,
+        email_send_request_rate_limit_per_ip=100,
+        email_send_request_rate_limit_per_flow=1,
+        email_send_request_rate_limit_global=100,
+    )
+    started = await _start_flow(config, state="RECOVER_STATE")
+    await delete_email_flow(started.flow_id)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "settings", config)
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+    request = _request(
+        cookie_name=started.cookie_name,
+        cookie_value=started.cookie_value,
+        csrf_token=started.csrf_token,
+    )
+    payload = EmailHeadlessSendRequest(flow_id=started.flow_id, email="user@example.com")
+
+    expired = await auth.send_email_headless(request, payload, db=_DB(), sender=_Sender())
+    limited = await auth.send_email_headless(request, payload, db=_DB(), sender=_Sender())
+
+    assert expired.status_code == 410
+    assert limited.status_code == 429
+    assert _json(limited)["error_description"] == "too many email send requests"
+    assert int(limited.headers["retry-after"]) == _json(limited)["retry_after"]
+    assert resolve_app.await_count == 1
+    assert await fake_redis.get(f"email_rate_send_request_flow:{started.flow_id}") == "1"
+    assert [key async for key in fake_redis.scan_iter("email_rate_verify_flow:*")] == []
+    request_keys = [key async for key in fake_redis.scan_iter("email_rate_send_request*")]
+    request_values = [await fake_redis.get(key) for key in request_keys if not key.startswith("email_rate_send_request_flow:")]
+    assert sorted(request_values) == ["2", "2"]
+
+
+async def test_headless_verify_limits_bound_recovery_before_application_lookup(monkeypatch, fake_redis):
+    config = _settings(
+        email_code_max_attempts=1,
+        email_rate_limit_per_flow=1,
+        email_verify_rate_limit_per_ip=100,
+        email_verify_rate_limit_per_flow=1,
+        email_verify_rate_limit_global=100,
+    )
+    started = await _start_flow(config, state="RECOVER_STATE")
+    await delete_email_flow(started.flow_id)
+    resolve_app = AsyncMock(return_value=object())
+    monkeypatch.setattr(auth, "settings", config)
+    monkeypatch.setattr(auth, "_resolve_authorize_app", resolve_app)
+    request = _request(
+        cookie_name=started.cookie_name,
+        cookie_value=started.cookie_value,
+        csrf_token=started.csrf_token,
+        ip="203.0.113.8",
+    )
+    payload = EmailHeadlessVerifyRequest(flow_id=started.flow_id, code="123456")
+
+    expired = await auth.verify_email_headless(request, payload, db=_DB())
+    limited = await auth.verify_email_headless(request, payload, db=_DB())
+
+    assert expired.status_code == 410
+    assert limited.status_code == 429
+    assert _json(limited)["error"] == "rate_limited"
+    assert _json(limited)["error_description"] == "too many verification attempts"
+    assert int(limited.headers["retry-after"]) == _json(limited)["retry_after"]
+    assert resolve_app.await_count == 1
+    assert await fake_redis.get(f"email_rate_verify_flow:{started.flow_id}") == "1"
+    request_keys = [key async for key in fake_redis.scan_iter("email_rate_verify_request*")]
+    assert sorted([await fake_redis.get(key) for key in request_keys]) == ["2", "2"]
 
 
 async def test_headless_verify_revalidates_application_before_consuming_otp(monkeypatch):

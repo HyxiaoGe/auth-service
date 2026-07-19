@@ -13,9 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.models import User
 from app.services.email_sender import EmailDeliveryError, EmailSender
+from app.utils import redis as redis_util
 from app.utils.redis import (
     acquire_email_authorize_slot,
     acquire_email_send_slot,
+    acquire_email_verify_flow_slot,
+    acquire_email_verify_request_slot,
     consume_email_otp,
     delete_email_flow,
     get_email_flow,
@@ -96,6 +99,60 @@ async def acquire_email_flow_creation_slot(
         client_limit=config.email_authorize_rate_limit_per_client,
         ip_limit=config.email_authorize_rate_limit_per_ip,
         global_limit=config.email_authorize_rate_limit_global,
+    )
+
+
+async def acquire_email_verification_request_slot(
+    client_ip: str,
+    *,
+    config: Settings | None = None,
+) -> tuple[bool, int]:
+    config = config or get_settings()
+    return await acquire_email_verify_request_slot(
+        _mac(f"ip:{client_ip}", config),
+        window_seconds=config.email_rate_limit_window_seconds,
+        ip_limit=config.email_verify_rate_limit_per_ip,
+        global_limit=config.email_verify_rate_limit_global,
+    )
+
+
+async def acquire_email_send_request_slot(
+    client_ip: str,
+    *,
+    config: Settings | None = None,
+) -> tuple[bool, int]:
+    config = config or get_settings()
+    return await redis_util.acquire_email_send_request_slot(
+        _mac(f"ip:{client_ip}", config),
+        window_seconds=config.email_rate_limit_window_seconds,
+        ip_limit=config.email_send_request_rate_limit_per_ip,
+        global_limit=config.email_send_request_rate_limit_global,
+    )
+
+
+async def acquire_email_send_request_flow_slot(
+    flow_id: str,
+    *,
+    config: Settings | None = None,
+) -> tuple[bool, int]:
+    config = config or get_settings()
+    return await redis_util.acquire_email_send_request_flow_slot(
+        flow_id,
+        window_seconds=config.email_rate_limit_window_seconds,
+        flow_limit=config.email_send_request_rate_limit_per_flow,
+    )
+
+
+async def acquire_email_verification_flow_slot(
+    flow_id: str,
+    *,
+    config: Settings | None = None,
+) -> tuple[bool, int]:
+    config = config or get_settings()
+    return await acquire_email_verify_flow_slot(
+        flow_id,
+        window_seconds=config.email_rate_limit_window_seconds,
+        flow_limit=config.email_verify_rate_limit_per_flow,
     )
 
 

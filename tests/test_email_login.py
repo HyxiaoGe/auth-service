@@ -783,6 +783,234 @@ async def test_concurrent_authorize_rate_limit_is_a_strict_bound(limited_dimensi
     assert 0 < await fake_redis.ttl(key) <= 3600
 
 
+@pytest.mark.parametrize("limited_dimension", ["ip", "global"])
+async def test_concurrent_verify_request_rate_limit_is_a_strict_bound(limited_dimension, fake_redis):
+    from app.utils.redis import acquire_email_verify_request_slot
+
+    limit = 5
+    results = await asyncio.gather(
+        *[
+            acquire_email_verify_request_slot(
+                "shared-ip" if limited_dimension == "ip" else f"ip-{index}",
+                window_seconds=3600,
+                ip_limit=limit if limited_dimension == "ip" else 100,
+                global_limit=limit if limited_dimension == "global" else 100,
+            )
+            for index in range(20)
+        ]
+    )
+
+    assert sum(allowed for allowed, _ in results) == limit
+    key = {
+        "ip": "email_rate_verify_request_ip:shared-ip",
+        "global": "email_rate_verify_request_global",
+    }[limited_dimension]
+    assert await fake_redis.get(key) == str(limit)
+    assert 0 < await fake_redis.ttl(key) <= 3600
+
+
+@pytest.mark.parametrize("limited_dimension", ["ip", "global"])
+async def test_concurrent_send_request_rate_limit_is_a_strict_bound(limited_dimension, fake_redis):
+    from app.utils.redis import acquire_email_send_request_slot
+
+    limit = 5
+    results = await asyncio.gather(
+        *[
+            acquire_email_send_request_slot(
+                "shared-ip" if limited_dimension == "ip" else f"ip-{index}",
+                window_seconds=3600,
+                ip_limit=limit if limited_dimension == "ip" else 100,
+                global_limit=limit if limited_dimension == "global" else 100,
+            )
+            for index in range(20)
+        ]
+    )
+
+    assert sum(allowed for allowed, _ in results) == limit
+    key = {
+        "ip": "email_rate_send_request_ip:shared-ip",
+        "global": "email_rate_send_request_global",
+    }[limited_dimension]
+    assert await fake_redis.get(key) == str(limit)
+    assert 0 < await fake_redis.ttl(key) <= 3600
+
+
+async def test_concurrent_send_request_flow_rate_limit_is_a_strict_bound(fake_redis):
+    from app.utils.redis import acquire_email_send_request_flow_slot
+
+    results = await asyncio.gather(
+        *[
+            acquire_email_send_request_flow_slot(
+                "shared-flow",
+                window_seconds=3600,
+                flow_limit=5,
+            )
+            for _ in range(20)
+        ]
+    )
+
+    assert sum(allowed for allowed, _ in results) == 5
+    assert await fake_redis.get("email_rate_send_request_flow:shared-flow") == "5"
+
+
+async def test_send_request_rejection_does_not_increment_other_bucket_and_returns_ttl(fake_redis):
+    from app.utils.redis import acquire_email_send_request_slot
+
+    assert (
+        await acquire_email_send_request_slot(
+            "prime-ip",
+            window_seconds=3600,
+            ip_limit=100,
+            global_limit=1,
+        )
+    )[0]
+    await fake_redis.expire("email_rate_send_request_global", 7)
+    before = {
+        key: await fake_redis.get(key)
+        async for key in fake_redis.scan_iter("email_rate_send_request*")
+    }
+
+    allowed, retry_after = await acquire_email_send_request_slot(
+        "victim-ip",
+        window_seconds=3600,
+        ip_limit=100,
+        global_limit=1,
+    )
+
+    assert allowed is False
+    assert 1 <= retry_after <= 7
+    assert {
+        key: await fake_redis.get(key)
+        async for key in fake_redis.scan_iter("email_rate_send_request*")
+    } == before
+
+
+async def test_concurrent_verify_flow_rate_limit_is_a_strict_bound(fake_redis):
+    from app.utils.redis import acquire_email_verify_flow_slot
+
+    results = await asyncio.gather(
+        *[
+            acquire_email_verify_flow_slot(
+                "shared-flow",
+                window_seconds=3600,
+                flow_limit=5,
+            )
+            for _ in range(20)
+        ]
+    )
+
+    assert sum(allowed for allowed, _ in results) == 5
+    assert await fake_redis.get("email_rate_verify_flow:shared-flow") == "5"
+    assert 0 < await fake_redis.ttl("email_rate_verify_flow:shared-flow") <= 3600
+
+
+async def test_verify_request_rejection_does_not_increment_other_bucket(fake_redis):
+    from app.utils.redis import acquire_email_verify_request_slot
+
+    assert (
+        await acquire_email_verify_request_slot(
+            "prime-ip",
+            window_seconds=3600,
+            ip_limit=100,
+            global_limit=1,
+        )
+    )[0]
+    before = {
+        key: await fake_redis.get(key)
+        async for key in fake_redis.scan_iter("email_rate_verify_request*")
+    }
+
+    allowed, retry_after = await acquire_email_verify_request_slot(
+        "victim-ip",
+        window_seconds=3600,
+        ip_limit=100,
+        global_limit=1,
+    )
+
+    assert allowed is False
+    assert retry_after > 0
+    assert {
+        key: await fake_redis.get(key)
+        async for key in fake_redis.scan_iter("email_rate_verify_request*")
+    } == before
+
+
+async def test_verify_rate_limits_use_fixed_window_and_actual_retry_after(fake_redis):
+    from app.utils.redis import acquire_email_verify_request_slot
+
+    assert (
+        await acquire_email_verify_request_slot(
+            "shared-ip",
+            window_seconds=3600,
+            ip_limit=1,
+            global_limit=100,
+        )
+    )[0]
+    await fake_redis.expire("email_rate_verify_request_ip:shared-ip", 7)
+
+    allowed, retry_after = await acquire_email_verify_request_slot(
+        "shared-ip",
+        window_seconds=3600,
+        ip_limit=1,
+        global_limit=100,
+    )
+
+    assert allowed is False
+    assert 1 <= retry_after <= 7
+    assert await fake_redis.get("email_rate_verify_request_global") == "1"
+
+
+async def test_verify_ip_and_flow_rate_buckets_are_isolated(fake_redis):
+    from app.utils.redis import acquire_email_verify_flow_slot, acquire_email_verify_request_slot
+
+    assert (
+        await acquire_email_verify_request_slot(
+            "ip-one",
+            window_seconds=3600,
+            ip_limit=1,
+            global_limit=100,
+        )
+    )[0]
+    assert not (
+        await acquire_email_verify_request_slot(
+            "ip-one",
+            window_seconds=3600,
+            ip_limit=1,
+            global_limit=100,
+        )
+    )[0]
+    assert (
+        await acquire_email_verify_request_slot(
+            "ip-two",
+            window_seconds=3600,
+            ip_limit=1,
+            global_limit=100,
+        )
+    )[0]
+
+    assert (
+        await acquire_email_verify_flow_slot(
+            "flow-one",
+            window_seconds=3600,
+            flow_limit=1,
+        )
+    )[0]
+    assert not (
+        await acquire_email_verify_flow_slot(
+            "flow-one",
+            window_seconds=3600,
+            flow_limit=1,
+        )
+    )[0]
+    assert (
+        await acquire_email_verify_flow_slot(
+            "flow-two",
+            window_seconds=3600,
+            flow_limit=1,
+        )
+    )[0]
+
+
 async def test_existing_fixed_window_ttl_does_not_slide_on_accept(fake_redis):
     from app.utils.redis import acquire_email_send_slot
 

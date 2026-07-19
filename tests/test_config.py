@@ -114,6 +114,52 @@ def test_email_authorize_limits_default_to_high_water_circuit_breakers():
     assert settings.email_authorize_rate_limit_global == 10000
 
 
+def test_email_verify_limits_have_separate_request_and_flow_defaults():
+    settings = Settings()
+
+    assert settings.email_verify_rate_limit_per_ip == 120
+    assert settings.email_verify_rate_limit_per_flow == 15
+    assert settings.email_verify_rate_limit_global == 10000
+
+
+def test_email_send_request_limits_have_separate_defaults():
+    settings = Settings()
+
+    assert settings.email_send_request_rate_limit_per_ip == 120
+    assert settings.email_send_request_rate_limit_per_flow == 15
+    assert settings.email_send_request_rate_limit_global == 10000
+
+
+def test_email_send_request_flow_limit_covers_actual_send_quota():
+    with pytest.raises(
+        ValidationError,
+        match="email_send_request_rate_limit_per_flow must be >=",
+    ):
+        Settings(
+            email_rate_limit_per_flow=4,
+            email_send_request_rate_limit_per_flow=3,
+        )
+
+
+def test_email_verify_flow_limit_covers_every_allowed_code_attempt():
+    with pytest.raises(
+        ValidationError,
+        match="email_verify_rate_limit_per_flow must be >=",
+    ):
+        Settings(
+            email_code_max_attempts=5,
+            email_rate_limit_per_flow=3,
+            email_verify_rate_limit_per_flow=14,
+        )
+
+    settings = Settings(
+        email_code_max_attempts=5,
+        email_rate_limit_per_flow=3,
+        email_verify_rate_limit_per_flow=15,
+    )
+    assert settings.email_verify_rate_limit_per_flow == 15
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -129,6 +175,12 @@ def test_email_authorize_limits_default_to_high_water_circuit_breakers():
         ("email_authorize_rate_limit_per_ip", 0),
         ("email_authorize_rate_limit_per_client", 0),
         ("email_authorize_rate_limit_global", 0),
+        ("email_send_request_rate_limit_per_ip", 0),
+        ("email_send_request_rate_limit_per_flow", 0),
+        ("email_send_request_rate_limit_global", 0),
+        ("email_verify_rate_limit_per_ip", 0),
+        ("email_verify_rate_limit_per_flow", 0),
+        ("email_verify_rate_limit_global", 0),
         ("email_flow_max_per_browser", 0),
         ("email_rate_limit_window_seconds", 0),
         ("smtp_port", 0),

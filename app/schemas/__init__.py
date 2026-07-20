@@ -69,7 +69,7 @@ class OAuthTokenExchangeRequest(BaseModel):
     # PKCE (RFC 7636): required only when the auth code was minted with a code_challenge
     # (i.e. came through /authorize). Legacy direct-flow codes omit it.
     code_verifier: str | None = None
-    # reconcile code 兑换时必填；普通授权码保持兼容可选。
+    # session reconcile/resume code 兑换时必填；普通授权码保持兼容可选。
     redirect_uri: str | None = Field(default=None, max_length=2048)
     state: str | None = Field(default=None, max_length=2048)
 

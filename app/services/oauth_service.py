@@ -99,6 +99,37 @@ async def mint_reconcile_auth_code(
     return code
 
 
+async def mint_resume_auth_code(
+    *,
+    user_id: str,
+    client_id: str,
+    redirect_uri: str,
+    auth_generation: int,
+    code_challenge: str,
+    sid: str,
+    session_version: str,
+    origin: str,
+    state: str,
+) -> str:
+    """签发只可由同一当前 IdP Cookie 会话兑换的无感恢复授权码。"""
+    code = secrets.token_urlsafe(32)
+    payload = {
+        "flow": "resume",
+        "user_id": user_id,
+        "app_client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "provider": "sso_resume",
+        "auth_generation": auth_generation,
+        "code_challenge": code_challenge,
+        "sid": sid,
+        "session_version": session_version,
+        "origin": origin,
+        "state": state,
+    }
+    await store_auth_code(code, payload, settings.auth_code_expire_seconds)
+    return code
+
+
 # ==================== PKCE (RFC 7636) ====================
 
 

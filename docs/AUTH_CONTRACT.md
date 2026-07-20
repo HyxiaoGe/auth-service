@@ -249,6 +249,36 @@ version、Origin、client、redirect、state 与 PKCE。来源旧 sid 不会在 
 复验其中公开 sid/version；如果用户在两步之间又切换
 账户，返回 `400 invalid_grant: session changed`，code 同时已经原子消费，必须重新对账。
 
+### `POST /auth/session/resume` — 从中央会话恢复本地登录
+
+供已经没有本地 access token、但可能仍存在有效中央 SSO Cookie 的 RP 在窗口重新聚焦
+或 `visibilitychange` 时无跳转恢复登录。请求体与 `/auth/session/reconcile` 相同，必须使用
+`credentials: "include"`，但**不得携带也不需要 Bearer token**：
+
+```json
+{
+  "client_id": "example-web",
+  "redirect_uri": "https://app.example.com/auth/callback",
+  "state": "<32+ character base64url state>",
+  "code_challenge": "<43 character S256 challenge>",
+  "code_challenge_method": "S256"
+}
+```
+
+服务端会先精确校验 `Origin`、active `client_id` 与注册 `redirect_uri`，再读取 Cookie
+session 并校验用户启用状态及 `auth_generation`。响应不暴露中央身份：
+
+```json
+{ "status": "no_session" }
+{ "status": "resume_required", "code": "<one-time code>", "state": "<same state>" }
+```
+
+客户端必须比较 `state`，再以同一 Origin、Cookie、`client_id`、`redirect_uri`、state 和
+原始 PKCE verifier 调用 `/auth/oauth/token`。resume code 独立于普通授权码和 reconcile
+code，绑定 user、client、redirect、PKCE、公开 sid、session version、Origin 与 state；
+兑换阶段会重新读取 Cookie session 并复验全部绑定，防止签发与兑换之间切换账户。
+`no_session` 是正常的静默降级，客户端应保持未登录页面，不应弹出错误或自动进入交互登录。
+
 ### `POST /auth/oauth/token` — code → tokens
 
 Request (JSON):
@@ -262,7 +292,7 @@ Request (JSON):
   cannot be exchanged, regardless of whether it came from
   email OTP, Google, GitHub, or silent SSO. Legacy codes without this binding fail closed.
 - No `client_secret` — consumers are public PKCE clients.
-- 对 reconcile code，必须额外发送其原始 `redirect_uri` 与 `state`，请求带原始
+- 对 reconcile/resume code，必须额外发送其原始 `redirect_uri` 与 `state`，请求带原始
   `Origin` 和 `credentials: "include"`；普通授权码保持兼容，可不发送这两个字段。
 
 Response `200`:

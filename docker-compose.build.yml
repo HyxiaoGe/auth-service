@@ -1,0 +1,10 @@
+services:
+  bootstrap:
+    build:
+      context: .
+    image: auth-service:local
+
+  auth:
+    build:
+      context: .
+    image: auth-service:local

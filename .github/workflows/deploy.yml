@@ -70,7 +70,7 @@ jobs:
           recover_stopped_previous() {
             rollback_status=0
             if ! restore_source; then rollback_status=1; fi
-            if ! docker compose start auth; then rollback_status=1; fi
+            if ! docker compose -f docker-compose.yml start auth; then rollback_status=1; fi
             recovered=0
             for attempt in {1..30}; do
               if docker exec auth-service python -c "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3); assert response.status == 200"; then
@@ -87,8 +87,8 @@ jobs:
             echo "::warning::auth-service deployment failed; restoring ${previous_sha}"
             if ! restore_source; then rollback_status=1; fi
             # 本次数据库约束向后兼容，回滚应用时不执行 alembic downgrade。
-            if ! docker compose build auth; then rollback_status=1; fi
-            if ! docker compose up -d --no-build auth; then rollback_status=1; fi
+            if ! docker compose -f docker-compose.yml build auth; then rollback_status=1; fi
+            if ! docker compose -f docker-compose.yml up -d --no-build auth; then rollback_status=1; fi
             if ! docker exec auth-service python -c "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3); assert response.status == 200"; then
               rollback_status=1
             fi
@@ -130,12 +130,12 @@ jobs:
             auth_generation_cutover=1
           fi
           # 先构建新镜像，再按迁移类型安全切换。
-          docker compose build auth
+          docker compose -f docker-compose.yml build auth
           if [ "$auth_generation_cutover" -eq 1 ]; then
             # 旧实例不理解 auth_generation；迁移前先停流量，关闭双写协议窗口。
-            docker compose stop auth
+            docker compose -f docker-compose.yml stop auth
           fi
-          if ! docker compose run --rm --no-deps auth alembic upgrade head; then
+          if ! docker compose -f docker-compose.yml run --rm --no-deps auth alembic upgrade head; then
             migration_failed=1
             if [ "$auth_generation_cutover" -eq 1 ]; then
               echo "::error::数据库迁移失败，恢复已停止的旧容器"
@@ -145,7 +145,7 @@ jobs:
             exit 1
           fi
           migration_succeeded=1
-          docker compose up -d --no-build auth
+          docker compose -f docker-compose.yml up -d --no-build auth
           for attempt in {1..30}; do
             if docker exec auth-service python -c "import json, urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8100/health/ready', timeout=3); assert response.status == 200; assert json.load(response)['status'] == 'ready'"; then
               break

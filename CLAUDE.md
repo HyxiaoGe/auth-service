@@ -7,9 +7,9 @@ Centralized authentication microservice (FastAPI + Python 3.12) that issues RS25
 ```bash
 # Start all services (auth + postgres + redis)
 # Requires external Docker network: docker network create nano-banana-network
-docker compose up -d
-docker compose exec auth alembic upgrade head     # apply migrations
-docker compose exec auth python scripts/init_admin.py  # bootstrap admin + first app
+docker compose -f docker-compose.yml up -d
+docker compose -f docker-compose.yml exec auth alembic upgrade head
+docker compose -f docker-compose.yml exec auth python scripts/init_admin.py
 
 # Run without Docker
 pip install -r requirements.txt

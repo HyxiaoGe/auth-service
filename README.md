@@ -1,6 +1,7 @@
 # Auth Service
 
 [![Pull Request CI](https://github.com/HyxiaoGe/auth-service/actions/workflows/ci.yml/badge.svg)](https://github.com/HyxiaoGe/auth-service/actions/workflows/ci.yml)
+[![Container image](https://github.com/HyxiaoGe/auth-service/actions/workflows/container.yml/badge.svg)](https://github.com/HyxiaoGe/auth-service/actions/workflows/container.yml)
 [![CodeQL](https://github.com/HyxiaoGe/auth-service/actions/workflows/codeql.yml/badge.svg)](https://github.com/HyxiaoGe/auth-service/actions/workflows/codeql.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
@@ -43,10 +44,10 @@ Authorization Code + PKCE、RS256 JWT/JWKS、Refresh Token 轮换与跨应用 SS
 
 ## 快速开始
 
-本地自托管使用独立的 `docker-compose.local.yml`。它会创建自己的 PostgreSQL、Redis、
+默认 Compose 会拉取固定版本的公开 GHCR 镜像，并创建独立的 PostgreSQL、Redis、JWT 密钥卷、
 数据库迁移任务和 Auth Service，不依赖任何现有 Docker 网络或其他项目。
 
-要求：Docker Engine 与 Docker Compose v2。
+要求：Docker Engine 与 Docker Compose 2.20 或更高版本。
 
 ```bash
 # 1. 克隆项目
@@ -56,23 +57,26 @@ cd auth-service
 # 2. 创建本地配置
 cp .env.example .env
 
-# 3. 生成仅用于本地数据库的随机密码，将结果写入 .env 的 POSTGRES_PASSWORD
+# 3. 生成数据库随机密码，将结果写入 .env 的 POSTGRES_PASSWORD
 openssl rand -hex 32
 
-# 4. 构建镜像并生成 JWT RSA 密钥（keys/ 已被 git 忽略；重复执行会拒绝覆盖）
-docker compose -f docker-compose.local.yml run --rm --build keygen
+# 4. 一次启动；JWT 密钥初始化和数据库迁移会在 auth 启动前自动完成
+docker compose up -d
 
-# 5. 构建并启动；数据库迁移会在 auth 启动前自动执行
-docker compose -f docker-compose.local.yml up -d --build
-
-# 6. 查看状态
-docker compose -f docker-compose.local.yml ps
+# 5. 查看状态
+docker compose ps
 curl http://localhost:8100/health
 
-# 7. 可选：创建首个管理员和示例应用（不会生成固定密码）
+# 6. 可选：创建首个管理员和示例应用（不会生成固定密码）
 AUTH_ADMIN_EMAIL=admin@example.com \
-  docker compose -f docker-compose.local.yml exec -e AUTH_ADMIN_EMAIL auth \
+  docker compose exec -e AUTH_ADMIN_EMAIL auth \
   python scripts/init_admin.py
+```
+
+若希望从刚克隆的源码构建镜像，而不是拉取 GHCR 版本镜像：
+
+```bash
+docker compose -f compose.yaml -f docker-compose.build.yml up -d --build
 ```
 
 默认配置不会启用 Google、GitHub、邮箱验证码或内部账密入口，因此无需真实第三方凭据
@@ -85,8 +89,20 @@ AUTH_ADMIN_EMAIL=admin@example.com \
 - 健康检查：<http://localhost:8100/health>
 - JWKS：<http://localhost:8100/.well-known/jwks.json>
 
-现有 `docker-compose.yml` 保留为项目维护者的 dev 部署清单；第三方本地启动请始终显式使用
-`docker-compose.local.yml`。
+外部 PostgreSQL / Redis、密钥备份、反向代理和生产加固见
+[自托管指南](docs/SELF_HOSTING.md)。`docker-compose.local.yml` 仅作为 v1.0 命令的兼容入口；
+项目维护者的现有 dev 部署继续显式使用 `docker-compose.yml`。
+
+### 不克隆源码直接使用镜像
+
+```bash
+docker pull ghcr.io/hyxiaoge/auth-service:v1.1.0
+```
+
+镜像只包含认证服务，不内置 PostgreSQL 或 Redis。直接运行时必须先用同一镜像执行一次
+`python -m scripts.bootstrap`，再让服务容器只读挂载同一个 `/app/keys` 持久卷；容器默认以
+UID `10001` 运行。完整的外部依赖、网络、端口和健康检查命令见
+[直接消费容器镜像](docs/SELF_HOSTING.md#直接消费容器镜像不克隆源码)。
 
 ## 业务项目接入
 

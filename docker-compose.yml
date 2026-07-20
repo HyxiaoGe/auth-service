@@ -2,10 +2,12 @@ services:
   auth:
     build: .
     container_name: auth-service
+    # 维护者 dev 环境继续读取历史宿主机密钥挂载；公开镜像默认使用非 root 用户。
+    user: "0:0"
     expose:
       - "8100"
     env_file:
-      - .env
+      - ${AUTH_ENV_FILE:-.env}
     volumes:
       - ./app:/app/app
       - ./keys:/app/keys

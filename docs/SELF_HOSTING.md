@@ -1,7 +1,7 @@
 # 自托管指南
 
-本文说明如何使用仓库自带的独立 Docker Compose 启动 Auth Service，以及从本地开发迁移到
-生产环境前必须完成的配置。完整认证端点语义见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。
+本文说明如何使用版本化 GHCR 镜像或本地源码启动 Auth Service，以及从本地开发迁移到生产
+环境前必须完成的配置。完整认证端点语义见 [AUTH_CONTRACT.md](AUTH_CONTRACT.md)。
 
 ## 本地启动
 
@@ -15,45 +15,114 @@ openssl rand -hex 32
 将生成的 64 位十六进制字符串写入 `.env` 的 `POSTGRES_PASSWORD`。示例文件中的
 `replace-with-...` 只是占位符，不能用于共享环境或生产环境。
 
-默认会保持所有登录提供方关闭。基础服务启动不需要 Google、GitHub、SMTP 或 Resend 凭据。
+默认 `COMPOSE_PROFILES=bundled`，会启动独立 PostgreSQL 与 Redis。所有登录提供方保持关闭，
+因此基础服务启动不需要 Google、GitHub、SMTP 或 Resend 凭据。
 
-### 2. 生成 JWT 密钥
+若不使用默认 `.env` 文件名，必须让 Compose 插值与容器注入读取同一个文件：
 
 ```bash
-docker compose -f docker-compose.local.yml run --rm --build keygen
+AUTH_ENV_FILE=production.env docker compose --env-file production.env up -d
 ```
 
-密钥生成器会以 `0600` 权限创建私钥，并在任一目标文件已存在时直接失败，避免误操作导致
-现有 JWT 与 JWKS 突变。需要轮换密钥时，应先设计旧公钥兼容窗口并备份当前密钥，不要把
-重复执行本命令当作轮换流程。
+只设置 `AUTH_ENV_FILE` 不会改变 Compose 自身的变量插值来源。
 
-命令会在本地 `keys/` 目录生成 `private.pem` 与 `public.pem`。`keys/` 已被 Git 忽略；
-私钥不得提交、上传到镜像仓库或与业务服务共享。业务服务只需要通过 JWKS 获取公钥。
-
-### 3. 启动服务
+### 2. 一次启动
 
 ```bash
-docker compose -f docker-compose.local.yml up -d --build
-docker compose -f docker-compose.local.yml ps
+docker compose up -d
+docker compose ps
 curl http://localhost:8100/health
 ```
 
-Compose 会按以下顺序执行：
+Compose 会拉取 `.env` 中 `AUTH_SERVICE_IMAGE` 指向的固定版本，并按以下顺序执行：
 
-1. 启动独立 PostgreSQL 与 Redis，并等待健康检查通过；
-2. 运行 `alembic upgrade head`；
-3. 启动 Auth Service，并用容器内 `/health/ready` 检查数据库与 Redis。
+1. 启动内置 PostgreSQL 与 Redis（外部模式则跳过）；
+2. 唯一的 `bootstrap` 任务生成或验证 JWT 密钥，等待依赖就绪并执行 `alembic upgrade head`；
+3. 仅在初始化成功后启动 Auth Service，并用容器内 `/health/ready` 检查依赖。
+
+首次启动会在命名卷 `auth_keys` 中以 `0600` 权限创建私钥。后续启动只在公私钥完整、有效且
+匹配时复用；缺失一个文件、权限过宽、内容无效或密钥不匹配都会安全失败，绝不覆盖现有文件。
+需要轮换密钥时，应先设计旧公钥兼容窗口并备份当前密钥，不要删除卷后直接重启。
+
+私钥不会写入源码目录或镜像；业务服务只需要通过 JWKS 获取公钥。
 
 PostgreSQL 与 Redis 没有发布到宿主机端口；Auth Service 默认只绑定
-`127.0.0.1:8100`。数据保存在命名卷中。
+`127.0.0.1:8100`。数据库、Redis 与 JWT 密钥都保存在命名卷中。
 
-### 4. 创建首个管理员和应用
+### 3. 从源码构建（可选）
+
+```bash
+docker compose -f compose.yaml -f docker-compose.build.yml up -d --build
+```
+
+该覆盖文件只把 `bootstrap` 与 `auth` 改为构建当前目录，其余启动拓扑和安全检查保持一致。
+日常自托管建议继续使用版本化 GHCR 镜像，便于准确回滚。
+
+### 4. 使用外部 PostgreSQL 与 Redis（可选）
+
+将 `.env` 改为：
+
+```dotenv
+COMPOSE_PROFILES=
+DATABASE_URL=postgresql+asyncpg://user:url-encoded-password@db.example:5432/auth_service
+DATABASE_URL_SYNC=postgresql://user:url-encoded-password@db.example:5432/auth_service
+REDIS_URL=rediss://user:url-encoded-password@cache.example:6379/0
+```
+
+`COMPOSE_PROFILES` 留空后不会创建内置 PostgreSQL 与 Redis；`bootstrap` 会等待外部依赖并执行
+迁移。数据库密码中的 `@`、`:`、`/`、`#` 等保留字符必须 URL 编码。外部数据库账号必须拥有
+执行 Alembic 迁移所需的 schema 权限。
+
+### 5. 直接消费容器镜像（不克隆源码）
+
+镜像不包含 PostgreSQL 或 Redis。先准备可从容器网络访问的外部依赖，并创建 `auth.env`：
+
+```dotenv
+APP_ENV=production
+APP_DEBUG=false
+AUTH_BASE_URL=https://auth.example.com
+CORS_ORIGINS=https://app.example.com
+DATABASE_URL=postgresql+asyncpg://user:url-encoded-password@db.example:5432/auth_service
+DATABASE_URL_SYNC=postgresql://user:url-encoded-password@db.example:5432/auth_service
+REDIS_URL=rediss://user:url-encoded-password@cache.example:6379/0
+```
+
+然后让一次性初始化任务和长期服务共享同一个密钥卷与 Docker 网络：
+
+```bash
+docker network create auth-network
+docker volume create auth_service_keys
+
+docker run --rm \
+  --network auth-network \
+  --env-file auth.env \
+  -v auth_service_keys:/app/keys \
+  ghcr.io/hyxiaoge/auth-service:v1.1.0 \
+  python -m scripts.bootstrap
+
+docker run -d \
+  --name auth-service \
+  --restart unless-stopped \
+  --network auth-network \
+  --env-file auth.env \
+  -v auth_service_keys:/app/keys:ro \
+  -p 127.0.0.1:8100:8100 \
+  ghcr.io/hyxiaoge/auth-service:v1.1.0
+
+curl http://127.0.0.1:8100/health
+```
+
+请把 `auth-network` 替换为外部 PostgreSQL / Redis 可达的网络。镜像默认 UID 为 `10001`；
+若改用宿主机目录挂载，目录和已有密钥必须允许该 UID 访问，且私钥权限不得向组或其他用户开放。
+每次升级版本都应先运行新版本镜像的 `scripts.bootstrap`，迁移成功后再替换长期服务容器。
+
+### 6. 创建首个管理员和应用
 
 数据库迁移完成后，可显式指定一个邮箱作为首个管理员，并同时注册示例应用：
 
 ```bash
 AUTH_ADMIN_EMAIL=admin@example.com \
-  docker compose -f docker-compose.local.yml exec -e AUTH_ADMIN_EMAIL auth \
+  docker compose exec -e AUTH_ADMIN_EMAIL auth \
   python scripts/init_admin.py \
   --sample-app-name "Example Web App" \
   --sample-app-redirect-uri "http://localhost:3000/auth/callback"
@@ -68,20 +137,24 @@ AUTH_ADMIN_EMAIL=admin@example.com \
 若该身份已存在，初始化脚本会拒绝覆盖密码，必须改用独立、可审计的密码轮换流程。设置
 密码也不会自动开放账密登录端点。
 
-### 5. 日常操作
+### 7. 日常操作
 
 ```bash
 # 查看日志
-docker compose -f docker-compose.local.yml logs -f auth
+docker compose logs -f auth
 
-# 重新执行数据库迁移
-docker compose -f docker-compose.local.yml run --rm migrate
+# 重新验证密钥、依赖并执行数据库迁移
+docker compose run --rm bootstrap
 
 # 停止服务，保留数据
-docker compose -f docker-compose.local.yml down
+docker compose down
 ```
 
-`docker compose ... down -v` 会删除 PostgreSQL 与 Redis 数据卷；仅在明确需要清空本地数据时使用。
+JWT 私钥卷丢失会使既有 Access Token 与 Refresh Token 无法通过签名验证，但 Redis 中仍存活的
+SSO session 可能继续签发新密钥下的 Token，因此这不等同于全局登出。全局登出还需要单独撤销
+SSO session 或提升用户的 `auth_generation`。请将 `auth_keys` 与 PostgreSQL 一起纳入加密备份和
+恢复演练。`docker compose down -v` 会同时删除 JWT 密钥、PostgreSQL 与 Redis 数据卷；它不是
+普通卸载命令，只能在明确接受数据和密钥永久丢失时使用。
 
 本地 Compose 不会自动创建管理员或示例应用，也不会写入固定口令。应用注册与 SDK 接入流程见
 [ONBOARDING.md](ONBOARDING.md)。
@@ -156,7 +229,7 @@ RESEND_DAILY_QUOTA=100
 
 ## 生产部署检查表
 
-`docker-compose.local.yml` 面向单机本地体验，不是生产编排模板。生产部署至少需要：
+默认 `compose.yaml` 面向单机自托管，不是高可用生产编排模板。生产部署至少需要：
 
 - 使用 HTTPS 反向代理，并将 `AUTH_BASE_URL` 设置为最终公开地址；
 - 将 `APP_ENV` 设为 `production`，关闭 `APP_DEBUG`；
@@ -173,6 +246,6 @@ RESEND_DAILY_QUOTA=100
 
 ## 现有 dev Compose
 
-根目录 `docker-compose.yml` 使用项目维护者现有的外部 Docker 网络，保留用于当前 dev 部署兼容。
-它不是通用自托管入口，也不会被本地指南引用。第三方部署应基于
-`docker-compose.local.yml` 或自行编排等价的 PostgreSQL、Redis、迁移与 Auth Service 服务。
+根目录 `docker-compose.yml` 使用项目维护者现有的外部 Docker 网络，只用于当前 dev 部署兼容。
+它不是通用自托管入口。第三方部署应直接使用默认 `compose.yaml`，或自行编排等价的
+PostgreSQL、Redis、迁移、持久 JWT 密钥卷与 Auth Service 服务。

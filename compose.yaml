@@ -1,0 +1,73 @@
+x-auth-runtime: &auth-runtime
+  image: ${AUTH_SERVICE_IMAGE:-ghcr.io/hyxiaoge/auth-service:v1.1.0}
+  env_file:
+    - ${AUTH_ENV_FILE:-.env}
+  environment:
+    DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-auth_service}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD or DATABASE_URL in .env}@postgres:5432/${POSTGRES_DB:-auth_service}}
+    DATABASE_URL_SYNC: ${DATABASE_URL_SYNC:-postgresql://${POSTGRES_USER:-auth_service}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD or DATABASE_URL_SYNC in .env}@postgres:5432/${POSTGRES_DB:-auth_service}}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+    profiles: ["bundled"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-auth_service}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-auth_service}
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    profiles: ["bundled"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - auth_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  bootstrap:
+    <<: *auth-runtime
+    command: ["python", "-m", "scripts.bootstrap"]
+    volumes:
+      - auth_keys:/app/keys
+    restart: "no"
+
+  auth:
+    <<: *auth-runtime
+    ports:
+      - "127.0.0.1:${APP_PORT:-8100}:8100"
+    volumes:
+      - auth_keys:/app/keys:ro
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health/ready', timeout=2)",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  auth_keys:
+  auth_postgres_data:
+  auth_redis_data:

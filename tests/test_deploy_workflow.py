@@ -19,10 +19,10 @@ def test_deploy_detects_auth_generation_cutover_from_previous_sha():
 def test_deploy_builds_stops_migrates_then_switches_for_generation_cutover():
     workflow = _workflow()
     deploy_sequence = workflow.split("# 先构建新镜像，再按迁移类型安全切换。", 1)[1]
-    build = "docker compose build auth"
-    stop = "docker compose stop auth"
-    migrate = "docker compose run --rm --no-deps auth alembic upgrade head"
-    switch = "docker compose up -d --no-build auth"
+    build = "docker compose -f docker-compose.yml build auth"
+    stop = "docker compose -f docker-compose.yml stop auth"
+    migrate = "docker compose -f docker-compose.yml run --rm --no-deps auth alembic upgrade head"
+    switch = "docker compose -f docker-compose.yml up -d --no-build auth"
 
     assert build in deploy_sequence
     assert stop in deploy_sequence
@@ -37,10 +37,13 @@ def test_generation_migration_failure_restores_source_and_restarts_stopped_old_c
     workflow = _workflow()
     recovery = workflow.split("recover_stopped_previous() {", 1)[1].split("rollback() {", 1)[0]
     assert "restore_source" in recovery
-    assert "docker compose start auth" in recovery
+    assert "docker compose -f docker-compose.yml start auth" in recovery
     assert "http://127.0.0.1:8100/health" in recovery
-    assert "docker compose build auth" not in recovery
-    assert 'if ! docker compose run --rm --no-deps auth alembic upgrade head; then' in workflow
+    assert "docker compose -f docker-compose.yml build auth" not in recovery
+    assert (
+        'if ! docker compose -f docker-compose.yml run --rm --no-deps auth alembic upgrade head; then'
+        in workflow
+    )
     assert "数据库迁移失败，恢复已停止的旧容器" in workflow
 
 

@@ -99,7 +99,7 @@ AUTH_ADMIN_EMAIL=admin@example.com \
 仓库内提供 [auth-client](auth-client)：
 
 ```bash
-pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.0#subdirectory=auth-client"
+pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.1#subdirectory=auth-client"
 ```
 
 ```python

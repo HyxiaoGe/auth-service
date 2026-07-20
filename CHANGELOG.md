@@ -4,11 +4,15 @@
 
 ## [未发布]
 
+## [1.0.0] - 2026-07-20
+
 ### 安全
 
 - 新部署不再由历史迁移写入固定超级管理员；已执行过该迁移的现有数据库不会自动降权，
   维护者应单独审计和处置遗留身份。
 - JWT 密钥生成默认拒绝覆盖，并以 `0600` 权限创建私钥。
+- GitHub Actions 固定到经过核对的完整提交 SHA，降低上游标签移动带来的供应链风险。
+- 升级 PyJWT、cryptography、python-multipart 与 pytest，修复已公开的安全漏洞。
 
 ### 兼容性
 
@@ -29,5 +33,8 @@
 - 默认配置、架构示例与邮件幂等键改为项目中立命名。
 - 内部账密兼容入口使用通用请求头，同时保留旧请求头兼容。
 - SDK 接入示例改为固定版本标签，避免生产依赖移动中的默认分支。
+- Python Auth Client 发布 `0.2.1`，同步提高 JWT 与密码学依赖的安全下限。
+- Dependabot 仅批量合并次版本和补丁版本更新，主版本升级独立成 PR 审查。
 
-[未发布]: https://github.com/HyxiaoGe/auth-service/commits/main
+[未发布]: https://github.com/HyxiaoGe/auth-service/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/HyxiaoGe/auth-service/releases/tag/v1.0.0

@@ -12,7 +12,7 @@ alembic==1.14.0
 redis[hiredis]==5.2.1
 
 # JWT & Security
-PyJWT[crypto]==2.10.1
+PyJWT[crypto]==2.13.0
 cryptography==44.0.0
 pwdlib[argon2]==0.2.1
 

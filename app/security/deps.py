@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.config import get_settings
 from app.security.jwt_handler import decode_token
-from app.security.revocation import is_user_access_revoked
+from app.security.revocation import is_sid_revoked, is_user_access_revoked
 
 bearer_scheme = HTTPBearer(auto_error=False)
 settings = get_settings()
@@ -21,6 +21,7 @@ class CurrentUser(BaseModel):
     email: str
     aud: str | None = None  # app client_id
     scopes: list[str] = []
+    sid: str | None = None
 
 
 async def _get_explicitly_trusted_current_user(token: str) -> CurrentUser | None:
@@ -98,12 +99,19 @@ async def get_current_user(
             detail="Token revoked",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if await is_sid_revoked(payload.get("sid")):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
     return CurrentUser(
         sub=payload["sub"],
         email=payload.get("email", ""),
         aud=payload.get("aud"),
         scopes=payload.get("scopes", []),
+        sid=payload.get("sid"),
     )
 
 

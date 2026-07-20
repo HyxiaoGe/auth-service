@@ -27,7 +27,10 @@ database -> config
 
 - RS256 asymmetric keys: auth service signs with private key, consumers verify with public key via JWKS
 - Access tokens: 15-min expiry; Refresh tokens: 30-day expiry, stored in DB as SHA256 hash, rotated on use
-- Token reuse detection: reusing a revoked refresh token triggers revocation of all user tokens
+- 中央 Cookie 只保存 secret lookup key；Redis payload 中另存公开 `session_id`。新浏览器流的
+  access/auth-code/refresh token 只贯穿公开 `sid`，refresh 数据库行同样绑定该值
+- Token reuse detection: reusing a revoked refresh token revokes that application's lineage;
+  explicit `/auth/logout/all` alone advances the user-wide authentication generation
 - Scopes: `["admin"]` for superusers, `["user"]` for regular users; enforced via `require_scopes()` dependency
 
 ## Social Login (OAuth)
@@ -40,7 +43,8 @@ database -> config
 
 ## Redis
 
-- Used for JWT blacklisting (JTI-based with TTL via `SETEX`) and short-lived OAuth auth codes (5-min TTL)
+- Used for JWT blacklisting, short-lived OAuth auth codes, IdP sessions, `revoked_sid:{sid}` 与
+  显式全设备登出的 `revoked_user:{sub}` marker
 - Initialized lazily, closed on shutdown via FastAPI `lifespan`
 
 ## Password Hashing

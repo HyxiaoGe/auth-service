@@ -112,6 +112,8 @@ class Settings(BaseSettings):
     session_cookie_domain: str | None = None  # None => host-only cookie (required by __Host- prefix)
     session_ttl_seconds: int = 604800  # 7-day sliding window
     session_absolute_max_seconds: int = 2592000  # 30-day hard cap regardless of activity
+    # sid 失效标记必须覆盖 refresh token 的最长寿命，避免被替换的浏览器会话复活。
+    sid_revocation_ttl_seconds: int = Field(default=2592060, gt=0)
 
     # Auth service base URL
     auth_base_url: str = "http://localhost:8100"
@@ -214,6 +216,11 @@ class Settings(BaseSettings):
             raise ValueError("password_auth_email_prefix and password_auth_email_domain must not contain @")
         if self.email_code_ttl_seconds > self.email_flow_ttl_seconds:
             raise ValueError("email_code_ttl_seconds must be <= email_flow_ttl_seconds")
+        minimum_sid_revocation_ttl = self.refresh_token_expire_days * 86400 + 60
+        if self.sid_revocation_ttl_seconds < minimum_sid_revocation_ttl:
+            raise ValueError(
+                "sid_revocation_ttl_seconds must cover refresh_token_expire_days plus 60 seconds"
+            )
         if self.email_flow_recovery_ttl_seconds < self.email_flow_ttl_seconds:
             raise ValueError("email_flow_recovery_ttl_seconds must be >= email_flow_ttl_seconds")
         if self.email_send_request_rate_limit_per_flow < self.email_rate_limit_per_flow:

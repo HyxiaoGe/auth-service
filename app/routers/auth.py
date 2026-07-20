@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from jwt.exceptions import InvalidTokenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
@@ -23,12 +24,14 @@ from app.schemas import (
     ProfileUpdateRequest,
     RefreshRequest,
     RevokeRequest,
+    SessionReconcileRequest,
     TokenResponse,
     UserInfo,
     UserPreferencesResponse,
 )
 from app.security.deps import CurrentUser, get_current_user
-from app.security.revocation import revoke_user_access_tokens
+from app.security.jwt_handler import decode_token
+from app.security.revocation import revoke_sid, revoke_user_access_tokens
 from app.services import auth_service, email_login_service, email_sender, oauth_service, session_service
 from app.services.email_sender import EmailSender, get_email_sender
 from app.utils.oauth_redirect import oauth_redirect
@@ -44,6 +47,15 @@ settings = get_settings()
 
 _HEADLESS_S256_CHALLENGE = re.compile(r"[A-Za-z0-9_-]{43}")
 _HEADLESS_STATE = re.compile(r"[A-Za-z0-9_-]{32,2048}")
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{16,128}")
+
+
+def _bearer_token(request: Request) -> str | None:
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
 
 
 @router.get("/capabilities")
@@ -72,6 +84,95 @@ async def capabilities(
             "email_headless_login": headless_login_available,
         },
         headers={"Cache-Control": "no-store", "Vary": "Origin"},
+    )
+
+
+@router.post("/session/reconcile")
+async def reconcile_session(
+    request: Request,
+    payload: SessionReconcileRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """把 RP 本地 token 与当前浏览器 IdP cookie session 安全对账。
+
+    只返回状态或一次性授权码，绝不向跨域前端暴露中央 user_id。旧 access token
+    没有 sid 时仍可普通认证，但必须通过 switch_required 升级到当前 session。
+    """
+    origin = request.headers.get("origin")
+    if not _headless_origin_matches(request, payload.redirect_uri):
+        return _headless_error(
+            "origin_not_allowed",
+            "request origin is not allowed for this redirect_uri",
+            status_code=403,
+        )
+    if await _resolve_authorize_app(payload.client_id, payload.redirect_uri, db) is None:
+        return _headless_error(
+            "invalid_client",
+            "unknown client_id or unregistered redirect_uri",
+            status_code=400,
+        )
+
+    bearer = _bearer_token(request)
+    if bearer is None:
+        return _headless_error("invalid_token", "Bearer access token is required", status_code=401)
+    try:
+        source = decode_token(bearer, verify_type="access")
+        source_sub = str(uuid.UUID(source["sub"]))
+        if source.get("aud") != payload.client_id:
+            raise ValueError("audience mismatch")
+        source_generation = source.get("auth_generation", 0)
+        if type(source_generation) is not int or source_generation < 0:
+            raise ValueError("invalid auth_generation")
+        source_sid = source.get("sid")
+        if source_sid is not None and (
+            not isinstance(source_sid, str) or _SESSION_ID.fullmatch(source_sid) is None
+        ):
+            raise ValueError("invalid sid")
+    except (InvalidTokenError, KeyError, TypeError, ValueError):
+        return _headless_error("invalid_token", "Bearer access token is invalid", status_code=401)
+
+    target_cookie_sid, target_session = await session_service.resolve_session(request)
+    if target_cookie_sid is None or target_session is None:
+        return _headless_json({"status": "no_session"})
+
+    target_user = await _validate_silent_session(target_cookie_sid, target_session, db)
+    if target_user is None:
+        return _headless_json({"status": "no_session"})
+    target_session_id = target_session.get("session_id")
+    if not isinstance(target_session_id, str) or _SESSION_ID.fullmatch(target_session_id) is None:
+        await delete_session(target_cookie_sid)
+        return _headless_json({"status": "no_session"})
+
+    if source_sid == target_session_id:
+        if source_sub != str(target_user.id) or source_generation != target_user.auth_generation:
+            # sid 的用户与代际不可变；任一失配只能是伪造、陈旧票据或 session 损坏。
+            return _headless_error("invalid_token", "Bearer session binding is invalid", status_code=401)
+        return _headless_json({"status": "match"})
+
+    # 先签发并持久化一次性 code，不提前撤销来源 session。来源 sid 会在 code 成功
+    # 兑换、继任 token 已经持久化后撤销，避免 Redis/网络/并发切换失败把用户永久登出。
+    session_version = target_session.get("version")
+    if not isinstance(session_version, str) or not session_version:
+        await delete_session(target_cookie_sid)
+        return _headless_json({"status": "no_session"})
+    code = await oauth_service.mint_reconcile_auth_code(
+        user_id=str(target_user.id),
+        client_id=payload.client_id,
+        redirect_uri=payload.redirect_uri,
+        auth_generation=target_user.auth_generation,
+        code_challenge=payload.code_challenge,
+        sid=target_session_id,
+        source_sid=source_sid,
+        session_version=session_version,
+        origin=origin,
+        state=payload.state,
+    )
+    return _headless_json(
+        {
+            "status": "switch_required",
+            "code": code,
+            "state": payload.state,
+        }
     )
 
 
@@ -490,6 +591,15 @@ async def verify_email_headless(
         )
 
     flow = verified.flow
+    previous_cookie_sid = session_service.read_sid(request)
+    previous_session = await get_session(previous_cookie_sid) if previous_cookie_sid else None
+    source_sid = previous_session.get("session_id") if previous_session else None
+    created = await session_service.create_session(
+        str(verified.user.id),
+        ["email_otp"],
+        auth_generation=getattr(verified.user, "auth_generation", 0),
+        previous_sid=previous_cookie_sid,
+    )
     auth_code = await oauth_service.mint_auth_code(
         user_id=str(verified.user.id),
         client_id=flow["client_id"],
@@ -497,7 +607,11 @@ async def verify_email_headless(
         provider="email_otp",
         auth_generation=getattr(verified.user, "auth_generation", 0),
         code_challenge=flow["code_challenge"],
+        sid=created.session_id,
+        source_sid=source_sid,
     )
+    if previous_cookie_sid:
+        await delete_session(previous_cookie_sid)
     response = _headless_json(
         {
             "code": auth_code,
@@ -505,12 +619,7 @@ async def verify_email_headless(
             "expires_in": settings.auth_code_expire_seconds,
         }
     )
-    await session_service.start_session(
-        response,
-        str(verified.user.id),
-        ["email_otp"],
-        auth_generation=getattr(verified.user, "auth_generation", 0),
-    )
+    session_service.set_session_cookie(response, created.cookie_sid)
     return response
 
 
@@ -539,37 +648,40 @@ async def logout(
     response: Response,
     db: AsyncSession = Depends(get_db),
 ):
-    """Single Logout: destroy the IdP session, revoke all refresh tokens, clear the cookie.
+    """定向结束一个浏览器 IdP sid，不影响同用户其他设备或 session。
 
     POST-only (never GET) so it cannot be triggered by a cross-site <img>/navigation.
     ``post_logout_redirect_uri`` and ``client_id`` may be sent as a JSON body OR as
     urlencoded form fields -- the form variant lets a top-level ``<form method=POST>``
     deliver them so the SameSite=Lax session cookie rides the navigation to this
-    cross-site, POST-only endpoint. For true "logout everywhere", in-flight stateless
-    access tokens are also killed via a per-user revocation marker (see
-    ``revoke_user_access_tokens``), which resource servers check on the next request --
-    so a token already held by another app stops working without waiting out its TTL.
+    cross-site, POST-only endpoint. 为支持滚动升级，0.2.x 及更早客户端未发送
+    ``session_sid`` 时仅完成本地跳转，不触碰当前 Cookie session；否则旧应用 A
+    可能误撤销另一应用刚切换出的 B session。0.3+ 客户端使用
+    ``/auth/logout/session``，并以本地 access token 的公开 session_id 做严格匹配。
     """
-    post_logout_redirect_uri, client_id = await _read_logout_params(request)
+    post_logout_redirect_uri, client_id, target_sid = await _read_logout_params(request)
 
-    sid = session_service.read_sid(request)
-    session = await get_session(sid) if sid else None
-    if session:
-        user_id = session.get("user_id")
-        if user_id:
-            await auth_service.logout_user(uuid.UUID(user_id), db)
-            # Also kill in-flight stateless access tokens for this user: revoking refresh
-            # tokens only stops NEW ones, but the user's other apps still hold valid access
-            # tokens until they expire. TTL = access-token lifetime so the marker self-cleans.
-            # Best-effort: this marker is an optimization on top of refresh-token revocation,
-            # so a shared-Redis blip must not break logout itself (cookie + session below must
-            # still clear). Degraded mode: those access tokens then live out their <=15-min TTL.
-            try:
-                await revoke_user_access_tokens(user_id, time.time(), settings.access_token_expire_minutes * 60 + 60)
-            except Exception:
-                logger.warning("failed to write access-token revocation marker on logout", exc_info=True)
-    if sid:
-        await delete_session(sid)
+    cookie_sid = session_service.read_sid(request)
+    session = await get_session(cookie_sid) if cookie_sid else None
+    current_session_id = session.get("session_id") if session else None
+    if target_sid is not None and target_sid != current_session_id:
+        return _headless_error(
+            "session_mismatch",
+            "the browser session changed before logout",
+            status_code=409,
+        )
+    if target_sid is None:
+        # 兼容 0.2.x 及更早 SDK，但绝不能猜测当前 Cookie 就是调用方要退出的账号：
+        # 另一应用可能已把中央会话从 A 切到 B。旧客户端只完成安全跳转/本地登出，
+        # 0.3+ SDK 改走 /logout/session，提供公开 session_id 后才执行定向撤销。
+        if post_logout_redirect_uri and await _is_registered_redirect(post_logout_redirect_uri, db, client_id):
+            return RedirectResponse(url=post_logout_redirect_uri, status_code=302)
+        return MessageResponse(message="Local logout completed; browser session unchanged")
+    if target_sid:
+        await revoke_sid(target_sid, settings.sid_revocation_ttl_seconds)
+        await auth_service.revoke_session_refresh_tokens(target_sid, db)
+    if cookie_sid:
+        await delete_session(cookie_sid)
 
     if post_logout_redirect_uri and await _is_registered_redirect(post_logout_redirect_uri, db, client_id):
         redirect = RedirectResponse(url=post_logout_redirect_uri, status_code=302)
@@ -580,8 +692,74 @@ async def logout(
     return MessageResponse(message="Logged out")
 
 
-async def _read_logout_params(request: Request) -> tuple[str | None, str | None]:
-    """Pull (post_logout_redirect_uri, client_id) from a JSON or urlencoded form body.
+@router.post("/logout/session")
+async def logout_session(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+):
+    """0.3+ SDK 的严格定向登出端点，必须证明本地 token 的公开 session_id。"""
+    post_logout_redirect_uri, client_id, target_sid = await _read_logout_params(request)
+    if target_sid is None:
+        return _headless_error(
+            "session_sid_required",
+            "session_sid is required",
+            status_code=409,
+        )
+    cookie_sid = session_service.read_sid(request)
+    session = await get_session(cookie_sid) if cookie_sid else None
+    current_session_id = session.get("session_id") if session else None
+    if current_session_id is not None and target_sid != current_session_id:
+        return _headless_error(
+            "session_mismatch",
+            "the browser session changed before logout",
+            status_code=409,
+        )
+    if current_session_id is not None:
+        await revoke_sid(current_session_id, settings.sid_revocation_ttl_seconds)
+        await auth_service.revoke_session_refresh_tokens(current_session_id, db)
+    if cookie_sid:
+        await delete_session(cookie_sid)
+    if post_logout_redirect_uri and await _is_registered_redirect(post_logout_redirect_uri, db, client_id):
+        redirect = RedirectResponse(url=post_logout_redirect_uri, status_code=302)
+        session_service.clear_session_cookie(redirect)
+        return redirect
+    session_service.clear_session_cookie(response)
+    return MessageResponse(message="Logged out")
+
+
+@router.post("/logout/all")
+async def logout_all_devices(
+    request: Request,
+    response: Response,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """显式全设备登出：递增 auth_generation，并写入 per-user access marker。"""
+    user_id = uuid.UUID(current_user.sub)
+    await auth_service.logout_user(user_id, db)
+    try:
+        await revoke_user_access_tokens(
+            current_user.sub,
+            time.time(),
+            settings.access_token_expire_minutes * 60 + 60,
+        )
+    except Exception:
+        logger.warning("failed to write access-token revocation marker on logout-all", exc_info=True)
+
+    cookie_sid = session_service.read_sid(request)
+    session = await get_session(cookie_sid) if cookie_sid else None
+    if cookie_sid and session and session.get("user_id") == current_user.sub:
+        session_id = session.get("session_id")
+        if isinstance(session_id, str):
+            await revoke_sid(session_id, settings.sid_revocation_ttl_seconds)
+        await delete_session(cookie_sid)
+        session_service.clear_session_cookie(response)
+    return MessageResponse(message="Logged out on all devices")
+
+
+async def _read_logout_params(request: Request) -> tuple[str | None, str | None, str | None]:
+    """读取 redirect、client_id 与客户端声明的目标 session_sid。
 
     A top-level ``<form method=POST>`` (urlencoded) is how the SameSite=Lax session cookie
     reaches this POST-only endpoint cross-site; JSON is kept for programmatic callers.
@@ -593,15 +771,20 @@ async def _read_logout_params(request: Request) -> tuple[str | None, str | None]
         try:
             data = json.loads(await request.body() or b"null")
         except (ValueError, TypeError):
-            return None, None
+            return None, None, None
         if not isinstance(data, dict):
-            return None, None
+            return None, None, None
     elif "application/x-www-form-urlencoded" in content_type:
         parsed = parse_qs((await request.body()).decode("utf-8", "ignore"))
         data = {key: values[0] for key, values in parsed.items() if values}
     else:
-        return None, None
-    return data.get("post_logout_redirect_uri"), data.get("client_id")
+        return None, None, None
+    session_sid = data.get("session_sid")
+    if session_sid is not None and (
+        not isinstance(session_sid, str) or _SESSION_ID.fullmatch(session_sid) is None
+    ):
+        session_sid = "__invalid_session_sid__"
+    return data.get("post_logout_redirect_uri"), data.get("client_id"), session_sid
 
 
 async def _is_registered_redirect(uri: str, db: AsyncSession, client_id: str | None = None) -> bool:
@@ -703,11 +886,11 @@ async def authorize(
         )
 
     # 3. resolve the IdP session (slides TTL, enforces absolute lifetime)
-    sid, session = await session_service.resolve_session(request)
+    cookie_sid, session = await session_service.resolve_session(request)
 
     # 4. silent SSO — a live session and no forced re-auth
     if session and prompt not in ("login", "select_account"):
-        session_user = await _validate_silent_session(sid, session, db)
+        session_user = await _validate_silent_session(cookie_sid, session, db)
         if session_user is None:
             session = None
 
@@ -720,6 +903,7 @@ async def authorize(
             provider=amr[0],
             auth_generation=session_user.auth_generation,
             code_challenge=code_challenge,
+            sid=session["session_id"],
         )
         params = {"code": code}
         if state is not None:

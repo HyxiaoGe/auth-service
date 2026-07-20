@@ -50,6 +50,12 @@ class LogoutRequest(BaseModel):
     # is honored only when it belongs to a registered application.
     post_logout_redirect_uri: str | None = None
     client_id: str | None = None
+    session_sid: str | None = Field(
+        default=None,
+        min_length=16,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
 
 
 class OAuthCallbackParams(BaseModel):
@@ -63,6 +69,17 @@ class OAuthTokenExchangeRequest(BaseModel):
     # PKCE (RFC 7636): required only when the auth code was minted with a code_challenge
     # (i.e. came through /authorize). Legacy direct-flow codes omit it.
     code_verifier: str | None = None
+    # reconcile code 兑换时必填；普通授权码保持兼容可选。
+    redirect_uri: str | None = Field(default=None, max_length=2048)
+    state: str | None = Field(default=None, max_length=2048)
+
+
+class SessionReconcileRequest(BaseModel):
+    client_id: str = Field(min_length=1, max_length=255)
+    redirect_uri: str = Field(min_length=1, max_length=2048)
+    state: str = Field(min_length=32, max_length=2048, pattern=r"^[A-Za-z0-9_-]+$")
+    code_challenge: str = Field(min_length=43, max_length=43, pattern=r"^[A-Za-z0-9_-]+$")
+    code_challenge_method: str = Field(pattern=r"^S256$")
 
 
 class EmailHeadlessStartRequest(BaseModel):

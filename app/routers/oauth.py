@@ -5,17 +5,20 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.database import get_db
 from app.models import Application, User
 from app.schemas import OAuthTokenExchangeRequest, TokenResponse
+from app.security.revocation import is_sid_revoked, revoke_sid
 from app.services import auth_service, oauth_service, session_service
 from app.utils.oauth_redirect import oauth_redirect
 from app.utils.redirect_uri import oauth_redirect_uri_allowed
-from app.utils.redis import consume_auth_code
+from app.utils.redis import consume_auth_code, delete_session, get_session
 
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 # ==================== Google ====================
@@ -79,7 +82,7 @@ async def google_callback(
         db=db,
     )
 
-    return await _social_redirect(user, state_data, provider="google")
+    return await _social_redirect(user, state_data, provider="google", request=request, db=db)
 
 
 # ==================== GitHub ====================
@@ -143,7 +146,7 @@ async def github_callback(
         db=db,
     )
 
-    return await _social_redirect(user, state_data, provider="github")
+    return await _social_redirect(user, state_data, provider="github", request=request, db=db)
 
 
 # ==================== Token Exchange ====================
@@ -170,6 +173,12 @@ async def exchange_code_for_tokens(
         )
 
     _enforce_pkce(code_data, payload.code_verifier)
+    await _enforce_reconcile_exchange(code_data, payload, request, db)
+    if await is_sid_revoked(code_data.get("sid")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired authorization code",
+        )
 
     code_generation = code_data.get("auth_generation")
     if type(code_generation) is not int or code_generation < 0:
@@ -192,10 +201,26 @@ async def exchange_code_for_tokens(
             detail="Invalid or expired authorization code",
         )
 
-    tokens = await auth_service._issue_tokens(user, payload.client_id, db)
+    code_sid = code_data.get("sid")
+    if code_sid is None:
+        tokens = await auth_service._issue_tokens(user, payload.client_id, db)
+    else:
+        tokens = await auth_service._issue_tokens(user, payload.client_id, db, sid=code_sid)
     await auth_service._log_login(
         db, user.id, payload.client_id, code_data.get("provider", "oauth"), request, success=True
     )
+    # 所有可能阻止继任 token 签发的步骤都已完成后，才定向退休来源会话。
+    # 退休失败不得吞掉已经持久化的继任 token；下一次 reconcile 会再次收敛。
+    source_sid = code_data.get("source_sid")
+    if isinstance(source_sid, str) and source_sid != code_sid:
+        try:
+            await auth_service.revoke_session_refresh_tokens(source_sid, db)
+        except Exception:
+            logger.warning("failed to revoke source refresh-token family after reconcile", exc_info=True)
+        try:
+            await revoke_sid(source_sid, settings.sid_revocation_ttl_seconds)
+        except Exception:
+            logger.warning("failed to write source session revocation marker after reconcile", exc_info=True)
     return tokens
 
 
@@ -335,6 +360,36 @@ def _enforce_pkce(code_data: dict, code_verifier: str | None) -> None:
         )
 
 
+async def _enforce_reconcile_exchange(
+    code_data: dict,
+    payload: OAuthTokenExchangeRequest,
+    request: Request,
+    db: AsyncSession,
+) -> None:
+    """reconcile code 兑换时复验 cookie session 与全部 RP 绑定，阻断 TOCTOU。"""
+    if code_data.get("flow") != "reconcile":
+        return
+    if payload.redirect_uri != code_data.get("redirect_uri") or payload.state != code_data.get("state"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: reconcile binding mismatch")
+    if request.headers.get("origin") != code_data.get("origin"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: origin mismatch")
+    await _validate_redirect_uri(payload.client_id, payload.redirect_uri, db)
+
+    current_cookie_sid, current_session = await session_service.resolve_session(request)
+    expected_sid = code_data.get("sid")
+    if current_session is None or current_session.get("session_id") != expected_sid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: session changed")
+    expected_version = code_data.get("session_version")
+    current_version = current_session.get("version")
+    if current_version != expected_version:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: session changed")
+    if (
+        current_session.get("user_id") != code_data.get("user_id")
+        or current_session.get("auth_generation", 0) != code_data.get("auth_generation")
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: session changed")
+
+
 async def _validate_redirect_uri(client_id: str, redirect_uri: str, db: AsyncSession):
     """Verify the redirect_uri is registered for the given application."""
     if not oauth_redirect_uri_allowed(redirect_uri):
@@ -351,7 +406,13 @@ async def _validate_redirect_uri(client_id: str, redirect_uri: str, db: AsyncSes
         )
 
 
-async def _social_redirect(user: User, state_data: dict, provider: str) -> RedirectResponse:
+async def _social_redirect(
+    user: User,
+    state_data: dict,
+    provider: str,
+    request: Request | None = None,
+    db: AsyncSession | None = None,
+) -> RedirectResponse:
     """Finish a social login: mint the auth code, establish the IdP session, redirect back.
 
     When the flow originated at /authorize, ``state_data`` carries ``app_state`` (echoed
@@ -363,6 +424,15 @@ async def _social_redirect(user: User, state_data: dict, provider: str) -> Redir
     ``social_login()`` returns a ``User``, not a ``Response``.
     """
     redirect_uri = state_data["redirect_uri"]
+    previous_cookie_sid = session_service.read_sid(request) if request is not None else None
+    previous_session = await get_session(previous_cookie_sid) if previous_cookie_sid else None
+    source_sid = previous_session.get("session_id") if previous_session else None
+    created = await session_service.create_session(
+        str(user.id),
+        [provider],
+        auth_generation=getattr(user, "auth_generation", 0),
+        previous_sid=previous_cookie_sid,
+    )
     code = await oauth_service.mint_auth_code(
         user_id=str(user.id),
         client_id=state_data["client_id"],
@@ -370,16 +440,15 @@ async def _social_redirect(user: User, state_data: dict, provider: str) -> Redir
         provider=provider,
         auth_generation=getattr(user, "auth_generation", 0),
         code_challenge=state_data.get("code_challenge"),
+        sid=created.session_id,
+        source_sid=source_sid,
     )
+    if previous_cookie_sid:
+        await delete_session(previous_cookie_sid)
     params = {"code": code}
     app_state = state_data.get("app_state")
     if app_state is not None:
         params["state"] = app_state
     response = oauth_redirect(redirect_uri, params)
-    await session_service.start_session(
-        response,
-        str(user.id),
-        [provider],
-        auth_generation=getattr(user, "auth_generation", 0),
-    )
+    session_service.set_session_cookie(response, created.cookie_sid)
     return response

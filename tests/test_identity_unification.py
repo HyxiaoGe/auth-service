@@ -684,7 +684,7 @@ async def test_oauth_callback_delegates_missing_email_for_bound_provider_identit
         captured.update(kwargs)
         return type("BoundUser", (), {"id": uuid.uuid4()})()
 
-    async def fake_redirect(_user, _state_data, provider):
+    async def fake_redirect(_user, _state_data, provider, request=None, db=None):
         captured["redirect_provider"] = provider
         return RedirectResponse("https://app.example/callback?code=ok")
 

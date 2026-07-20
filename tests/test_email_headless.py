@@ -564,12 +564,16 @@ async def test_headless_verify_returns_only_authorization_code_and_starts_sso_se
         "provider": "email_otp",
         "auth_generation": 0,
         "code_challenge": CHALLENGE,
+        "sid": code_data["sid"],
     }
+    assert code_data["sid"]
     session_cookie = next(value for value in response.headers.getlist("set-cookie") if "sso_session=" in value)
     sid = re.search(r"(?:__Host-)?sso_session=([^;]+)", session_cookie).group(1)
     session = await get_session(sid)
     assert session["user_id"] == str(user.id)
     assert session["amr"] == ["email_otp"]
+    assert session["session_id"] == code_data["sid"]
+    assert session["session_id"] != sid  # HttpOnly cookie lookup key 永不进入 token/code
 
 
 async def test_headless_verify_limits_missing_flow_by_client_ip_before_flow_or_otp_lookup(monkeypatch, fake_redis):

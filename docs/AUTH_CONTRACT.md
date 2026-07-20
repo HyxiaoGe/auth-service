@@ -53,6 +53,14 @@ API calls
 
 Backend
   └─ auth-client.JWTValidator.verify(token)  → AuthenticatedUser
+
+Already-open app reconciliation (focus / visible / bounded interval)
+  └─ auth-client-web.reconcileSession()
+       POST ${AUTH_URL}/auth/session/reconcile (Bearer local access token + IdP cookie)
+         ├─ match           → keep current local credentials
+         ├─ no_session      → keep current local session; no account switch is asserted
+         └─ switch_required → exchange the returned one-time code with the same cookie,
+                              atomically replace local credentials and clear old-user state
 ```
 
 `silentLogin()`/`login()` use a **top-level browser navigation** (not an iframe) so the
@@ -200,6 +208,47 @@ Stable headless error codes include:
 | 429 | `rate_limited` | Retry after `retry_after` / `Retry-After`. |
 | 503 | `delivery_unavailable` | Headless email login or delivery is unavailable. |
 
+### `POST /auth/session/reconcile` — 对账当前浏览器账户
+
+供已有本地 access token 的 RP 在页面刷新、窗口重新聚焦或 `visibilitychange` 时调用。
+请求必须是带 `credentials: "include"` 的 JSON，且携带本地 access token：
+
+```http
+Authorization: Bearer <local access token>
+Origin: https://app.example.com
+```
+
+```json
+{
+  "client_id": "example-web",
+  "redirect_uri": "https://app.example.com/auth/callback",
+  "state": "<32+ character base64url state>",
+  "code_challenge": "<43 character S256 challenge>",
+  "code_challenge_method": "S256"
+}
+```
+
+服务端精确校验 `Origin`、active `client_id`、注册的 `redirect_uri`、token `aud`、
+PKCE S256 与 state；缺失 Origin 一律 `403 origin_not_allowed`。响应不暴露中央
+`user_id`，只有三种成功状态：
+
+```json
+{ "status": "match" }
+{ "status": "no_session" }
+{ "status": "switch_required", "code": "<one-time code>", "state": "<same state>" }
+```
+
+`match` 仅在 token 的 `sub + sid` 与当前 Cookie session 都一致时返回。迁移前没有
+`sid` 的旧 token 可继续普通认证，但不会返回 `match`；有中央 session 时返回
+`switch_required`，借此次换票升级。`switch_required` code 绑定目标公开 sid、session
+version、Origin、client、redirect、state 与 PKCE。来源旧 sid 不会在 code 签发阶段撤销；
+只有继任 token 已成功持久化后才退休，失败时旧本地会话仍可恢复。
+
+客户端必须先比较返回 state，再用同一个 `credentials: "include"` Cookie 调用
+`POST /auth/oauth/token`。换票会通过 secret Cookie lookup key 读取 Redis session，
+复验其中公开 sid/version；如果用户在两步之间又切换
+账户，返回 `400 invalid_grant: session changed`，code 同时已经原子消费，必须重新对账。
+
 ### `POST /auth/oauth/token` — code → tokens
 
 Request (JSON):
@@ -208,10 +257,13 @@ Request (JSON):
 ```
 - The `code` is single-use. `client_id` must match the app the code was minted for.
 - `code_verifier` is required for codes minted via `/auth/authorize` (PKCE-bound).
-- The code is also bound to the user's current `auth_generation`. A code minted before
-  `/auth/logout` cannot be exchanged after logout, regardless of whether it came from
+- The code is also bound to the user's current `auth_generation` and, for browser flows,
+  `sid`. A code minted before `/auth/logout/all`, or for a sid later replaced/logged out,
+  cannot be exchanged, regardless of whether it came from
   email OTP, Google, GitHub, or silent SSO. Legacy codes without this binding fail closed.
 - No `client_secret` — consumers are public PKCE clients.
+- 对 reconcile code，必须额外发送其原始 `redirect_uri` 与 `state`，请求带原始
+  `Origin` 和 `credentials: "include"`；普通授权码保持兼容，可不发送这两个字段。
 
 Response `200`:
 ```json
@@ -232,8 +284,13 @@ unknown (not in the store), fails signature/type validation, or carries an auth 
 different from the locked user/DB token row simply returns `401`. Consumers must still
 persist only the newest refresh token and coalesce concurrent refreshes.
 
-Refresh and logout serialize on the PostgreSQL user row. Refresh locks the user first and
-then the refresh-token row; logout takes the same user lock, increments `auth_generation`,
+新 refresh JWT 与数据库行都绑定 `sid`，rotation 继承同一 sid。若
+`revoked_sid:{sid}` 已存在，refresh 在访问数据库前即返回 `401`。迁移前无 sid 的
+旧 refresh token 从本版本起返回 `401 Refresh token upgrade required`，防止其形成不受
+session 撤销约束的永久轮转分支；仍有效的旧 access token 可通过 reconcile 或重新登录升级。
+
+Refresh and explicit `/auth/logout/all` serialize on the PostgreSQL user row. Refresh locks the user first and
+then the refresh-token row; logout-all takes the same user lock, increments `auth_generation`,
 and revokes every refresh token in one transaction. Therefore a refresh that commits first
 is subsequently swept by logout, while a refresh that runs second sees the new generation
 and cannot mint a successor.
@@ -255,22 +312,31 @@ Requires `Authorization: Bearer <access_token>`. Response `200`:
 Missing/invalid token → `401`. The fields beyond `id`/`email` are convenience profile
 data; treat `name`/`avatar_url` as nullable.
 
-### `POST /auth/logout` — single logout (end IdP session)
+### `POST /auth/logout` — 当前浏览器 session 登出
 
-`POST` only (so it cannot be triggered by cross-site GET navigation). `post_logout_redirect_uri`
-and `client_id` may be sent **either** as a JSON body `{ "post_logout_redirect_uri": "...",
-"client_id": "..." }` **or** as urlencoded form fields — the form variant lets a top-level
-`<form method=POST>` carry the `SameSite=Lax` session cookie to this cross-site, POST-only
-endpoint (this is the browser SDK's single-logout path). Ends the shared IdP session,
-atomically increments the user's `auth_generation`, revokes all of the user's refresh
-tokens, and clears the session cookie. If
-`post_logout_redirect_uri` is a registered redirect uri → `302` there (open-redirect
+`POST` only (so it cannot be triggered by cross-site GET navigation). `post_logout_redirect_uri`、
+0.3+ 客户端使用 `POST /auth/logout/session`。`client_id` 与 `session_sid` 可使用 JSON
+或 urlencoded form 发送。`session_sid` 来自本地 access token 的公开 sid；服务端通过
+当前 Cookie 查出 Redis payload 中的公开 session_id 后比较，不会把 Cookie 密钥暴露给客户端。
+它与当前 session_id 不一致时返回
+`409 session_mismatch`；字段缺失时返回 `409 session_sid_required`。
+两种错误都不会撤销 session、清 Cookie 或执行跳转。urlencoded form
+允许顶层 `<form method=POST>` 在跨站 POST 中携带 `SameSite=Lax` session Cookie。
+该端点仅撤销 Cookie 对应公开 sid
+的 refresh token 与 access token，删除该 IdP session 并清 Cookie；同用户其他设备、
+其他 sid 不受影响。滚动升级期间，旧客户端继续调用 `/auth/logout`；由于旧请求没有
+session_sid，兼容端点只执行注册回跳、不触碰当前中央 Cookie，避免旧应用 A 误杀另一应用
+刚切换出的 B session。全部客户端升级到 0.3+ 后可再移除兼容端点。
+If `post_logout_redirect_uri` is a registered redirect uri → `302` there (open-redirect
 guarded); otherwise `200 {message}`. When `client_id` is supplied the uri must be
 registered **for that app** (tighter); without it, any active app's registered uri matches.
-For true cross-app logout, the IdP also writes a **per-user access-token revocation marker**
-(see "Single-Logout revocation" below) so other apps' already-issued access tokens stop
-working on their next request instead of lingering until `exp`. This is the cross-app
-logout; per-app token revoke is `/auth/token/revoke`.
+
+### `POST /auth/logout/all` — 显式全设备登出
+
+需要 `Authorization: Bearer <access token>`。该端点才会锁定用户行、递增
+`auth_generation`、撤销该用户全部 refresh token，并写入 `revoked_user:{sub}`，使
+所有设备上的旧 access token 在下一次 API 请求时失效。若当前 Cookie session 也
+属于该用户，会一并删除并清 Cookie。
 
 ### `GET /.well-known/jwks.json` — verification keys
 
@@ -296,15 +362,16 @@ Both tokens are RS256 JWTs. Header: `{ "alg":"RS256", "kid":"auth-key-1", "typ":
 | `jti` | unique id |
 | `type` | `"access"` |
 | `auth_generation` | user's authentication generation when the token was issued |
+| `sid` | public token session-family id; independent from the secret HttpOnly Cookie lookup key |
 | `aud` | the app's `client_id` (present when issued with one) |
 | `scopes` | `["admin"]` for superusers else `["user"]` (present when non-empty) |
 
 **Refresh token** (30 days): `sub`, `iss`, `iat`, `exp` (+30d), `jti`, `type:"refresh"`,
-`auth_generation`, `aud`. No `email`/`scopes`. Stored server-side (hashed, with the same
-generation) for rotation + reuse detection. The first deployment introducing this field
-raises every existing user to generation 1 while legacy refresh rows and JWTs remain at
-generation 0, intentionally forcing a one-time re-login across existing applications.
-New users start at generation 0 and only advance on account-wide logout.
+`auth_generation`, `aud`, `sid`. No `email`/`scopes`. Stored server-side (hashed, with the same
+generation and nullable sid) for rotation + reuse detection. The column remains nullable only
+to permit an online schema migration; runtime refresh rejects legacy sidless rows/JWTs, so those
+sessions must upgrade through reconcile or sign-in instead of creating an unrevokable lineage.
+New users start at generation 0 and only advance on explicit account-wide `/auth/logout/all`.
 
 ## Verifying tokens (backend requirements)
 
@@ -333,11 +400,26 @@ Why each option matters:
 
 Signature alg is pinned to `RS256`. JWKS is cached (`cache_ttl`, default 300s).
 
-### Single-Logout revocation (in-flight access tokens)
+### Session 与全设备两级撤销
+
+普通浏览器账户切换和 `/auth/logout` 使用 sid 级 marker：
+
+| | |
+|-|-|
+| key | `revoked_sid:{sid}` |
+| value | 固定字符串 `1` |
+| ttl | 至少 refresh token lifetime + 60 秒（默认 30 天 + 60 秒） |
+| rule | token 有 sid 且 marker 存在时，在任何业务处理前返回 `401` |
+
+这样只会立即停止同一浏览器 session 下 Fusion、Audio 等 RP 的旧账户 token，不会
+误伤同一用户在另一台设备上的独立 sid。Redis read failure 必须 fail-open，退化到
+JWT 自身有效期；auth-service 的 refresh endpoint 也执行同一检查。
+
+显式 `/auth/logout/all` 另外使用 per-user marker：
 
 Access tokens are stateless JWTs, so the signature check above passes even after the user
-logged out elsewhere — the token stays valid until `exp` (≤15 min). To honor "logout once =
-logout everywhere", `POST /auth/logout` writes a **per-user revocation marker** into the
+logged out elsewhere — the token stays valid until `exp` (≤15 min). To honor explicit
+"logout all devices", `POST /auth/logout/all` writes a **per-user revocation marker** into the
 **shared Redis** that every consumer on this deployment already connects to:
 
 | | |
@@ -363,19 +445,19 @@ shared single-box Redis). **Fail open:** because the check is now on the auth ho
 every request, a Redis read error must be swallowed (log + treat as not-revoked), not turned
 into a `500` — otherwise a single shared-Redis blip locks every user out of every app. The
 revocation lag then degrades to the token's own `exp` (≤15 min) until Redis recovers.
-Likewise, `/auth/logout` writes the marker best-effort: a write failure is logged but does
+Likewise, `/auth/logout/all` writes the user marker best-effort: a write failure is logged but does
 not fail the logout (the cookie + session are still cleared and refresh tokens still revoked).
 
-This marker is the only thing that makes a foreign logout take effect on the **next API call**
-rather than after the access-token TTL. Without shared-Redis access a consumer degrades to
-"valid until `exp`"; instant cross-app logout then requires introspection or back-channel
-logout (not currently provided).
+Consumers must check both marker types after JWT verification. Without shared-Redis access a
+consumer degrades to "valid until `exp`".
 
 ## Security requirements for consumers
 
 - **PKCE S256** on every `/auth/authorize` (the SDK does this; `plain` is rejected).
 - **Validate `state`** on the callback before exchanging the code — this is the app's
   primary CSRF defense; `SameSite` is only defense-in-depth.
+- Reconcile requests must use exact Origin, PKCE S256, credentialed Cookie requests, and
+  atomically replace local tokens only after the state-validated code exchange succeeds.
 - **Verify `issuer`, `audience` (= your `client_id`), and token `type`** on the backend
   (see above).
 - Use **HTTPS** in production (the IdP session cookie is `Secure` + `__Host-` only over

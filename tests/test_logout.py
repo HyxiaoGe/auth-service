@@ -20,6 +20,15 @@ from app.routers import auth
 from app.security import revocation
 from app.utils import redis as redis_util
 
+SID_ONE = "browser-session-sid-0001"
+SID_EMAIL = "browser-session-sid-email"
+SID_FIVE = "browser-session-sid-0005"
+SID_SIX = "browser-session-sid-0006"
+SID_SEVEN = "browser-session-sid-0007"
+SID_TWO = "browser-session-sid-0002"
+SID_THREE = "browser-session-sid-0003"
+SID_FOUR = "browser-session-sid-0004"
+
 
 def _request(sid=None, body=b"", content_type=None):
     headers = []
@@ -43,132 +52,209 @@ def _json_body(**fields):
     return json.dumps(fields).encode(), "application/json"
 
 
-async def test_logout_deletes_session_revokes_tokens_and_clears_cookie(monkeypatch):
+async def test_logout_deletes_session_revokes_sid_tokens_and_clears_cookie(monkeypatch):
     uid = uuid.uuid4()
-    await redis_util.create_session("s1", {"user_id": str(uid), "auth_time": 111}, ttl=100)
+    await redis_util.create_session(
+        SID_ONE, {"session_id": SID_ONE, "user_id": str(uid), "auth_time": 111}, ttl=100
+    )
 
     revoked = {}
 
-    async def fake_revoke(user_id, db, app_client_id=None):
-        revoked["uid"] = user_id
+    async def fake_revoke(sid, db):
+        revoked["sid"] = sid
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
 
+    body, content_type = _json_body(session_sid=SID_ONE)
     resp = Response()
-    await auth.logout(request=_request(sid="s1"), response=resp, db=None)
+    await auth.logout(
+        request=_request(sid=SID_ONE, body=body, content_type=content_type),
+        response=resp,
+        db=None,
+    )
 
-    assert await redis_util.get_session("s1") is None  # session destroyed
-    assert revoked["uid"] == uid  # refresh tokens revoked for the session's user
+    assert await redis_util.get_session(SID_ONE) is None  # session destroyed
+    assert revoked["sid"] == SID_ONE
+    assert await revocation.is_sid_revoked(SID_ONE) is True
     assert "Max-Age=0" in resp.headers["set-cookie"]  # cookie cleared
 
 
-async def test_email_otp_sso_session_uses_existing_logout_everywhere_path(monkeypatch):
+async def test_email_otp_sso_session_uses_sid_scoped_logout_path(monkeypatch):
     uid = uuid.uuid4()
     await redis_util.create_session(
-        "email-sso",
-        {"user_id": str(uid), "auth_time": 111, "amr": ["email_otp"]},
+        SID_EMAIL,
+        {"session_id": SID_EMAIL, "user_id": str(uid), "auth_time": 111, "amr": ["email_otp"]},
         ttl=100,
     )
     revoked = {}
 
-    async def fake_revoke(user_id, db, app_client_id=None):
-        revoked["uid"] = user_id
+    async def fake_revoke(sid, db):
+        revoked["sid"] = sid
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
+    body, content_type = _json_body(session_sid=SID_EMAIL)
     response = Response()
-    await auth.logout(request=_request(sid="email-sso"), response=response, db=None)
+    await auth.logout(
+        request=_request(sid=SID_EMAIL, body=body, content_type=content_type),
+        response=response,
+        db=None,
+    )
 
-    assert await redis_util.get_session("email-sso") is None
-    assert revoked["uid"] == uid
+    assert await redis_util.get_session(SID_EMAIL) is None
+    assert revoked["sid"] == SID_EMAIL
     assert "Max-Age=0" in response.headers["set-cookie"]
 
 
-async def test_logout_writes_user_access_revocation_marker(monkeypatch):
-    """SLO completeness: logout must also kill in-flight stateless access tokens.
-
-    Revoking refresh tokens only stops NEW access tokens; the user's currently-held access
-    tokens (in other apps like audio) stay valid until they expire. logout writes a per-user
-    revocation marker so resource servers reject those in-flight tokens on the next request.
-    """
+async def test_logout_writes_sid_marker_without_revoking_whole_user(monkeypatch):
     uid = uuid.uuid4()
-    await redis_util.create_session("s5", {"user_id": str(uid)}, ttl=100)
+    await redis_util.create_session(SID_FIVE, {"session_id": SID_FIVE, "user_id": str(uid)}, ttl=100)
 
-    async def fake_revoke(user_id, db, app_client_id=None):
+    async def fake_revoke(sid, db):
         return None
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
 
+    body, content_type = _json_body(session_sid=SID_FIVE)
     resp = Response()
-    await auth.logout(request=_request(sid="s5"), response=resp, db=None)
+    await auth.logout(
+        request=_request(sid=SID_FIVE, body=body, content_type=content_type),
+        response=resp,
+        db=None,
+    )
 
-    revoked_at = await revocation.get_user_revoked_at(str(uid))
-    assert revoked_at is not None  # in-flight access tokens for this user are now revoked
+    assert await revocation.get_user_revoked_at(str(uid)) is None
+    assert await revocation.is_sid_revoked(SID_FIVE) is True
 
     # TTL = access-token lifetime (+slack) so the marker self-cleans once no pre-logout
     # token can still be unexpired. Pin it here so a wrong TTL in logout() can't slip through.
     r = await revocation.get_redis()
-    ttl = await r.ttl(f"{revocation.USER_REVOKED_PREFIX}{uid}")
-    expected = auth.settings.access_token_expire_minutes * 60 + 60
+    ttl = await r.ttl(f"{revocation.SID_REVOKED_PREFIX}{SID_FIVE}")
+    expected = auth.settings.sid_revocation_ttl_seconds
     assert expected - 5 < ttl <= expected
 
 
-async def test_logout_completes_even_when_marker_write_fails(monkeypatch):
-    """The marker is a best-effort optimization layered on top of refresh-token revocation.
-
-    A shared-Redis blip must never break logout itself: the cookie still has to be cleared
-    and the session destroyed. (Degraded mode: in-flight access tokens then live out their
-    <=15-min TTL, but the user is genuinely logged out everywhere else.)
-    """
+async def test_logout_rejects_stale_app_target_without_touching_current_cookie(monkeypatch):
     uid = uuid.uuid4()
-    await redis_util.create_session("s6", {"user_id": str(uid)}, ttl=100)
+    await redis_util.create_session(SID_SIX, {"session_id": SID_SIX, "user_id": str(uid)}, ttl=100)
 
-    async def fake_revoke(user_id, db, app_client_id=None):
+    async def fake_revoke(sid, db):
         return None
 
-    async def boom_marker(*args, **kwargs):
-        raise ConnectionError("redis down")
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
-    monkeypatch.setattr(auth, "revoke_user_access_tokens", boom_marker)
-
+    body, content_type = _json_body(session_sid="different-session-sid-123")
     resp = Response()
-    await auth.logout(request=_request(sid="s6"), response=resp, db=None)  # must not raise
+    result = await auth.logout(
+        request=_request(sid=SID_SIX, body=body, content_type=content_type),
+        response=resp,
+        db=None,
+    )
 
-    assert await redis_util.get_session("s6") is None  # session still destroyed
-    assert "Max-Age=0" in resp.headers["set-cookie"]  # cookie still cleared
+    assert result.status_code == 409
+    assert await redis_util.get_session(SID_SIX) is not None
+    assert "set-cookie" not in resp.headers
 
 
-async def test_logout_without_session_is_noop_but_clears_cookie(monkeypatch):
+async def test_logout_all_keeps_explicit_account_wide_generation_path(monkeypatch):
+    uid = uuid.uuid4()
+    await redis_util.create_session(SID_SEVEN, {"session_id": SID_SEVEN, "user_id": str(uid)}, ttl=100)
+    called = {}
+
+    async def fake_logout_user(user_id, db):
+        called["uid"] = user_id
+
+    monkeypatch.setattr(auth.auth_service, "logout_user", fake_logout_user)
+    response = Response()
+
+    result = await auth.logout_all_devices(
+        request=_request(sid=SID_SEVEN),
+        response=response,
+        current_user=auth.CurrentUser(sub=str(uid), email="u@example.com"),
+        db=None,
+    )
+
+    assert result.message == "Logged out on all devices"
+    assert called["uid"] == uid
+    assert await revocation.get_user_revoked_at(str(uid)) is not None
+    assert await redis_util.get_session(SID_SEVEN) is None
+    assert "Max-Age=0" in response.headers["set-cookie"]
+
+
+async def test_legacy_logout_without_target_is_server_side_noop(monkeypatch):
     calls = {"n": 0}
 
-    async def fake_revoke(user_id, db, app_client_id=None):
+    async def fake_revoke(sid, db):
         calls["n"] += 1
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    async def fake_registered(uri, db, client_id=None):
+        return True
+
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
+    monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
     resp = Response()
     await auth.logout(request=_request(sid=None), response=resp, db=None)
 
     assert calls["n"] == 0  # nothing to revoke
-    assert "Max-Age=0" in resp.headers["set-cookie"]
+    assert "set-cookie" not in resp.headers
+
+
+async def test_legacy_logout_with_current_cookie_never_guesses_or_revokes_current_account(monkeypatch):
+    await redis_util.create_session(
+        SID_SIX,
+        {"session_id": SID_SIX, "user_id": str(uuid.uuid4())},
+        ttl=100,
+    )
+    calls = {"n": 0}
+
+    async def fake_revoke(sid, db):
+        calls["n"] += 1
+
+    async def fake_registered(uri, db, client_id=None):
+        return True
+
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
+    monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
+    body, content_type = _form(post_logout_redirect_uri="https://app.example/auth/callback")
+    response = Response()
+
+    result = await auth.logout(
+        request=_request(sid=SID_SIX, body=body, content_type=content_type),
+        response=response,
+        db=None,
+    )
+
+    assert isinstance(result, RedirectResponse)
+    assert calls["n"] == 0
+    assert await redis_util.get_session(SID_SIX) is not None
+    assert await revocation.is_sid_revoked(SID_SIX) is False
+    assert "set-cookie" not in result.headers
 
 
 async def test_logout_form_post_redirects_to_registered_uri(monkeypatch):
     """The SLO case: a top-level urlencoded form POST must 302 back to a registered uri."""
-    await redis_util.create_session("s2", {"user_id": str(uuid.uuid4())}, ttl=100)
+    await redis_util.create_session(
+        SID_TWO, {"session_id": SID_TWO, "user_id": str(uuid.uuid4())}, ttl=100
+    )
 
-    async def fake_revoke(user_id, db, app_client_id=None):
+    async def fake_revoke(sid, db):
         return None
 
     async def fake_registered(uri, db, client_id=None):
         return True
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
     monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
-    body, ct = _form(post_logout_redirect_uri="https://app.example/auth/callback", client_id="appA")
+    body, ct = _form(
+        post_logout_redirect_uri="https://app.example/auth/callback",
+        client_id="appA",
+        session_sid=SID_TWO,
+    )
     resp = Response()
-    result = await auth.logout(request=_request(sid="s2", body=body, content_type=ct), response=resp, db=None)
+    result = await auth.logout_session(
+        request=_request(sid=SID_TWO, body=body, content_type=ct), response=resp, db=None
+    )
 
     assert isinstance(result, RedirectResponse)
     assert result.status_code == 302
@@ -178,40 +264,47 @@ async def test_logout_form_post_redirects_to_registered_uri(monkeypatch):
 
 async def test_logout_json_body_still_redirects_to_registered_uri(monkeypatch):
     """Back-compat: a programmatic JSON body keeps working."""
-    await redis_util.create_session("s3", {"user_id": str(uuid.uuid4())}, ttl=100)
+    await redis_util.create_session(
+        SID_THREE, {"session_id": SID_THREE, "user_id": str(uuid.uuid4())}, ttl=100
+    )
 
-    async def fake_revoke(user_id, db, app_client_id=None):
+    async def fake_revoke(sid, db):
         return None
 
     async def fake_registered(uri, db, client_id=None):
         return True
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
     monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
-    body, ct = _json_body(post_logout_redirect_uri="https://app.example/auth/callback")
+    body, ct = _json_body(
+        post_logout_redirect_uri="https://app.example/auth/callback",
+        session_sid=SID_THREE,
+    )
     resp = Response()
-    result = await auth.logout(request=_request(sid="s3", body=body, content_type=ct), response=resp, db=None)
+    result = await auth.logout(request=_request(sid=SID_THREE, body=body, content_type=ct), response=resp, db=None)
 
     assert isinstance(result, RedirectResponse)
     assert result.headers["location"] == "https://app.example/auth/callback"
 
 
 async def test_logout_ignores_unregistered_post_logout_uri(monkeypatch):
-    await redis_util.create_session("s4", {"user_id": str(uuid.uuid4())}, ttl=100)
+    await redis_util.create_session(
+        SID_FOUR, {"session_id": SID_FOUR, "user_id": str(uuid.uuid4())}, ttl=100
+    )
 
-    async def fake_revoke(user_id, db, app_client_id=None):
+    async def fake_revoke(sid, db):
         return None
 
     async def fake_registered(uri, db, client_id=None):
         return False  # open-redirect guard
 
-    monkeypatch.setattr(auth.auth_service, "logout_user", fake_revoke)
+    monkeypatch.setattr(auth.auth_service, "revoke_session_refresh_tokens", fake_revoke)
     monkeypatch.setattr(auth, "_is_registered_redirect", fake_registered)
 
-    body, ct = _form(post_logout_redirect_uri="https://evil.example/x")
+    body, ct = _form(post_logout_redirect_uri="https://evil.example/x", session_sid=SID_FOUR)
     resp = Response()
-    result = await auth.logout(request=_request(sid="s4", body=body, content_type=ct), response=resp, db=None)
+    result = await auth.logout(request=_request(sid=SID_FOUR, body=body, content_type=ct), response=resp, db=None)
 
     assert not isinstance(result, RedirectResponse)  # refused -> plain response
     assert "Max-Age=0" in resp.headers["set-cookie"]

@@ -1,10 +1,10 @@
-"""Per-user access-token revocation marker (Single Logout for stateless access tokens).
+"""Access-token revocation markers for browser sid and explicit account-wide logout.
 
 Access tokens are stateless JWTs that resource servers validate offline, so destroying the
 IdP session and revoking refresh tokens does NOT stop an already-issued access token until it
-expires -- the window where a logged-out app keeps accepting the token. ``/auth/logout`` writes
-a per-user "revoked before T" marker into the shared Redis; every resource server checks it
-right after verifying the JWT signature and rejects any token whose ``iat`` predates T.
+expires. Browser account replacement and ordinary logout write ``revoked_sid:{sid}``; explicit
+``/auth/logout/all`` additionally writes a per-user "revoked before T" marker. Resource servers
+check both immediately after JWT verification.
 
 This lives in the ``security`` layer (not ``utils``) on purpose: the check runs inside
 ``get_current_user`` and the architecture contract forbids ``security`` importing ``utils``, so
@@ -25,6 +25,7 @@ settings = get_settings()
 redis_client: redis.Redis | None = None
 
 USER_REVOKED_PREFIX = "revoked_user:"
+SID_REVOKED_PREFIX = "revoked_sid:"
 
 
 async def get_redis() -> redis.Redis:
@@ -75,3 +76,25 @@ async def is_user_access_revoked(user_id: str, token_iat: float | int | None) ->
     if revoked_at is None:
         return False
     return float(token_iat) < revoked_at
+
+
+async def revoke_sid(sid: str, ttl: int) -> None:
+    """定向失效一个浏览器 IdP session 及其全部 access/refresh token。"""
+    r = await get_redis()
+    await r.setex(f"{SID_REVOKED_PREFIX}{sid}", ttl, "1")
+
+
+async def is_sid_revoked(sid: str | None) -> bool:
+    """sid 已失效时返回 True；旧 token 没有 sid，继续走兼容认证路径。
+
+    该检查位于认证热路径，Redis 故障时与既有 per-user marker 一样 fail-open，
+    最坏退化到 JWT 自身有效期，不把共享 Redis 故障升级为全站 500。
+    """
+    if not sid:
+        return False
+    try:
+        r = await get_redis()
+        return bool(await r.exists(f"{SID_REVOKED_PREFIX}{sid}"))
+    except Exception:
+        logger.warning("sid revocation check unavailable (Redis); failing open", exc_info=True)
+        return False

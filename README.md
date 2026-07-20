@@ -162,12 +162,15 @@ configure({
 | POST | `/auth/email/headless/start` | 创建邮箱验证码授权事务 |
 | POST | `/auth/email/headless/send` | 发送邮箱验证码 |
 | POST | `/auth/email/headless/verify` | 验证邮箱验证码并返回一次性授权码 |
+| POST | `/auth/session/reconcile` | 对账本地 token 与当前浏览器 SSO session |
 | POST | `/auth/oauth/token` | 使用授权码与 PKCE verifier 换取 Token |
 | GET | `/auth/oauth/google` | 发起 Google 登录 |
 | GET | `/auth/oauth/github` | 发起 GitHub 登录 |
 | POST | `/auth/token/refresh` | 轮换 Refresh Token 并签发新 Token |
 | POST | `/auth/token/revoke` | 撤销 Refresh Token |
-| POST | `/auth/logout` | 结束 SSO 会话 |
+| POST | `/auth/logout` | 兼容旧 SDK，仅完成安全回跳，不猜测或撤销当前中央会话 |
+| POST | `/auth/logout/session` | 0.3+ SDK 按公开 session_id 严格定向登出 |
+| POST | `/auth/logout/all` | 显式全设备登出 |
 | GET | `/auth/userinfo` | 获取当前用户信息 |
 | GET | `/.well-known/jwks.json` | 发布 JWT 验签公钥 |
 | GET | `/health` | 进程健康检查 |

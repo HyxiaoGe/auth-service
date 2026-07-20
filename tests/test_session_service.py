@@ -96,7 +96,11 @@ async def test_resolve_session_unknown_sid_returns_none():
 
 async def test_resolve_session_valid_returns_sid_and_payload():
     now = int(time.time())
-    await redis_util.create_session("good", {"user_id": "u1", "auth_time": now, "amr": ["google"]}, ttl=100)
+    await redis_util.create_session(
+        "good",
+        {"session_id": "public-session-good", "user_id": "u1", "auth_time": now, "amr": ["google"]},
+        ttl=100,
+    )
     sid, payload = await session_service.resolve_session(_make_request({"sso_session": "good"}))
     assert sid == "good"
     assert payload["user_id"] == "u1"
@@ -121,6 +125,9 @@ async def test_start_session_sets_cookie_and_persists_fresh_session():
     assert payload["user_id"] == "user-1"
     assert payload["amr"] == ["google"]
     assert "auth_time" in payload
+    assert payload["version"]
+    assert payload["session_id"]
+    assert payload["session_id"] != sid
 
 
 async def test_start_session_mints_new_sid_each_time():
@@ -128,3 +135,19 @@ async def test_start_session_mints_new_sid_each_time():
     sid1 = await session_service.start_session(Response(), "user-1", ["google"])
     sid2 = await session_service.start_session(Response(), "user-1", ["google"])
     assert sid1 != sid2
+
+
+async def test_start_session_supersedes_previous_sid():
+    old_sid = await session_service.start_session(Response(), "user-1", ["google"])
+    old_session_id = (await redis_util.get_session(old_sid))["session_id"]
+    new_sid = await session_service.start_session(
+        Response(),
+        "user-2",
+        ["email_otp"],
+        previous_sid=old_sid,
+    )
+
+    assert new_sid != old_sid
+    assert await redis_util.get_session(old_sid) is None
+    # token 会话族必须等继任 token 已签发后再撤销，session 层只替换中央 cookie。
+    assert await session_service.is_sid_revoked(old_session_id) is False

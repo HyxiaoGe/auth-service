@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+### 新增
+
+- 新增 `POST /auth/session/reconcile`，支持已打开的多个 RP 在同一浏览器中安全同步中央账户。
+- access/auth-code/refresh token 与 refresh 持久记录新增浏览器 `sid` 绑定。
+- HttpOnly Cookie lookup key 与 token 中公开 `sid` 使用两个独立随机值，Cookie 密钥
+  永不进入 JWT、授权码、URL 或业务服务。
+- 新增 `revoked_sid:{sid}` 定向撤销与显式 `POST /auth/logout/all` 全设备登出。
+
+### 安全
+
+- reconcile code 绑定 Origin、client、redirect、state、PKCE、公开 sid 与 session version，
+  换票时通过 Cookie 映射复验；继任 token 成功持久化后才退休来源 sid。
+- 新增严格的 `/auth/logout/session`；旧 `/auth/logout` 在缺少 session_sid 时仅安全回跳，
+  避免 A 应用误撤销 Cookie 中已切换的 B 账号。
+- 迁移前无 sid 的 refresh token 改为 fail closed，阻断无法被 session 登出撤销的永久轮转分支。
+- 普通浏览器登出改为 sid 级撤销，避免本地旧账户误撤销当前 Cookie 中的新账户。
+
 ## [1.1.0] - 2026-07-20
 
 ### 新增

@@ -70,6 +70,7 @@ def create_access_token(
     app_client_id: str | None = None,
     scopes: list[str] | None = None,
     auth_generation: int = 0,
+    sid: str | None = None,
 ) -> str:
     """Create a short-lived access token."""
     now = datetime.now(UTC)
@@ -87,6 +88,8 @@ def create_access_token(
         payload["aud"] = app_client_id
     if scopes:
         payload["scopes"] = scopes
+    if sid:
+        payload["sid"] = sid
 
     return jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm, headers={"kid": "auth-key-1"})
 
@@ -95,6 +98,7 @@ def create_refresh_token(
     user_id: str,
     app_client_id: str | None = None,
     auth_generation: int = 0,
+    sid: str | None = None,
 ) -> tuple[str, str, datetime]:
     """
     Create a long-lived refresh token.
@@ -114,6 +118,8 @@ def create_refresh_token(
     }
     if app_client_id:
         payload["aud"] = app_client_id
+    if sid:
+        payload["sid"] = sid
 
     token = jwt.encode(payload, _get_private_key(), algorithm=settings.jwt_algorithm, headers={"kid": "auth-key-1"})
     token_hash = hashlib.sha256(token.encode()).hexdigest()

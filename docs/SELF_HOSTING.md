@@ -237,6 +237,8 @@ RESEND_DAILY_QUOTA=100
 - 对 PostgreSQL 与 Redis 启用备份、监控、访问控制和持久化策略；
 - 只在 `TRUSTED_PROXY_CIDRS` 中填写直连反向代理的精确 CIDR；
 - 以精确 Origin 配置 `CORS_ORIGINS`，不要使用通配符；
+- 保证 `SID_REVOCATION_TTL_SECONDS >= REFRESH_TOKEN_EXPIRE_DAYS * 86400 + 60`，并让
+  Auth Service 与所有资源服务共享同一 Redis，以便即时拒绝 `revoked_sid:{sid}`；
 - 为每个应用登记精确回调 URI，锁定 JWT `audience`；
 - 保持 `PASSWORD_AUTH_ENABLED=false`，除非存在经过审计的受控兼容需求；
 - 在切换流量前执行 Alembic 迁移并检查容器内 `/health/ready`；

@@ -1,9 +1,9 @@
-import base64
-import hashlib
 import hmac
 import json
 import logging
 import secrets
+
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
 from app.config import get_settings
 from app.services.oauth_clients import create_github_client, create_google_client
@@ -111,8 +111,9 @@ def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     """
     if not code_verifier or not code_challenge:
         return False
-    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-    expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    # 由 Authlib 的 RFC 7636 实现生成标准 S256 challenge，避免在业务代码中
+    # 将高熵 PKCE verifier 误建模成需要慢哈希保护的用户密码。
+    expected = create_s256_code_challenge(code_verifier)
     return hmac.compare_digest(expected, code_challenge)
 
 

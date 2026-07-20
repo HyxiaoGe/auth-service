@@ -9,7 +9,7 @@
 pip install -e /path/to/auth-service/auth-client[fastapi]
 
 # 或者从 git 安装
-pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.0#subdirectory=auth-client"
+pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.1#subdirectory=auth-client"
 ```
 
 ## 快速上手

@@ -59,7 +59,7 @@ Save the `client_id`. Notes:
 Install the shared validator SDK:
 
 ```bash
-pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.0#subdirectory=auth-client"
+pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.1#subdirectory=auth-client"
 ```
 
 Configure one validator from env and expose a thin `get_current_user` that returns **your

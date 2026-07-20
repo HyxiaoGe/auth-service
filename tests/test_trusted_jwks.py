@@ -170,7 +170,7 @@ def test_trusted_jwks_does_not_enable_other_algorithms(monkeypatch, tmp_path):
             "exp": now + timedelta(minutes=5),
             "type": "access",
         },
-        "not-an-rsa-key",
+        "not-an-rsa-key-but-long-enough-for-hs256",
         algorithm="HS256",
         headers={"kid": "auth-key-1"},
     )

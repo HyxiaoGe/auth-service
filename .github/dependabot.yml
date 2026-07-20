@@ -9,9 +9,46 @@ updates:
       timezone: Asia/Shanghai
     open-pull-requests-limit: 5
     groups:
-      python-dependencies:
+      runtime-web-minor-patch:
         patterns:
-          - "*"
+          - fastapi
+          - uvicorn
+          - httpx
+          - authlib
+          - pydantic
+          - pydantic-settings
+          - python-multipart
+          - tldextract
+        update-types:
+          - minor
+          - patch
+      datastore-minor-patch:
+        patterns:
+          - sqlalchemy
+          - asyncpg
+          - psycopg2-binary
+          - alembic
+          - redis
+        update-types:
+          - minor
+          - patch
+      security-minor-patch:
+        patterns:
+          - PyJWT
+          - cryptography
+          - pwdlib
+        update-types:
+          - minor
+          - patch
+      dev-tools-minor-patch:
+        patterns:
+          - pytest
+          - pytest-asyncio
+          - fakeredis
+          - ruff
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: pip
     directory: "/auth-client"
@@ -22,9 +59,12 @@ updates:
       timezone: Asia/Shanghai
     open-pull-requests-limit: 5
     groups:
-      auth-client-dependencies:
+      auth-client-minor-patch:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -35,6 +75,9 @@ updates:
       timezone: Asia/Shanghai
     open-pull-requests-limit: 5
     groups:
-      github-actions:
+      github-actions-minor-patch:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch

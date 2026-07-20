@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auth-client"
-version = "0.2.0"
+version = "0.2.1"
 description = "Lightweight JWT validator for services using Auth Service"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,9 +12,9 @@ license = "Apache-2.0"
 authors = [{ name = "Auth Service contributors" }]
 keywords = ["authentication", "jwt", "jwks", "fastapi"]
 dependencies = [
-    "PyJWT[crypto]>=2.8.0",
+    "PyJWT[crypto]>=2.13.0",
     "httpx>=0.25.0",
-    "cryptography>=41.0.0",
+    "cryptography>=48.0.1",
 ]
 
 [project.urls]

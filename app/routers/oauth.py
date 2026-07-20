@@ -173,7 +173,7 @@ async def exchange_code_for_tokens(
         )
 
     _enforce_pkce(code_data, payload.code_verifier)
-    await _enforce_reconcile_exchange(code_data, payload, request, db)
+    await _enforce_session_bound_exchange(code_data, payload, request, db)
     if await is_sid_revoked(code_data.get("sid")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -360,17 +360,17 @@ def _enforce_pkce(code_data: dict, code_verifier: str | None) -> None:
         )
 
 
-async def _enforce_reconcile_exchange(
+async def _enforce_session_bound_exchange(
     code_data: dict,
     payload: OAuthTokenExchangeRequest,
     request: Request,
     db: AsyncSession,
 ) -> None:
-    """reconcile code 兑换时复验 cookie session 与全部 RP 绑定，阻断 TOCTOU。"""
-    if code_data.get("flow") != "reconcile":
+    """reconcile/resume code 兑换时复验 Cookie session 与全部 RP 绑定。"""
+    if code_data.get("flow") not in {"reconcile", "resume"}:
         return
     if payload.redirect_uri != code_data.get("redirect_uri") or payload.state != code_data.get("state"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: reconcile binding mismatch")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: session binding mismatch")
     if request.headers.get("origin") != code_data.get("origin"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_grant: origin mismatch")
     await _validate_redirect_uri(payload.client_id, payload.redirect_uri, db)

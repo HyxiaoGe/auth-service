@@ -163,6 +163,7 @@ configure({
 | POST | `/auth/email/headless/send` | 发送邮箱验证码 |
 | POST | `/auth/email/headless/verify` | 验证邮箱验证码并返回一次性授权码 |
 | POST | `/auth/session/reconcile` | 对账本地 token 与当前浏览器 SSO session |
+| POST | `/auth/session/resume` | 从当前浏览器 SSO session 无感恢复本地登录 |
 | POST | `/auth/oauth/token` | 使用授权码与 PKCE verifier 换取 Token |
 | GET | `/auth/oauth/google` | 发起 Google 登录 |
 | GET | `/auth/oauth/github` | 发起 GitHub 登录 |

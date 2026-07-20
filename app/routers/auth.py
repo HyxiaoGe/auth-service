@@ -176,6 +176,70 @@ async def reconcile_session(
     )
 
 
+@router.post("/session/resume")
+async def resume_session(
+    request: Request,
+    payload: SessionReconcileRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """为当前浏览器中央会话签发无身份暴露的一次性恢复码。
+
+    该端点只服务已经失去本地 token 的 RP，不接受 Bearer token，也不返回用户
+    信息。一次性 code 绑定当前 Cookie session 与完整 RP 请求上下文，并在兑换时
+    再次复验，避免签发与兑换之间的账户切换导致串号。
+    """
+    origin = request.headers.get("origin")
+    if not _headless_origin_matches(request, payload.redirect_uri):
+        return _headless_error(
+            "origin_not_allowed",
+            "request origin is not allowed for this redirect_uri",
+            status_code=403,
+        )
+    if await _resolve_authorize_app(payload.client_id, payload.redirect_uri, db) is None:
+        return _headless_error(
+            "invalid_client",
+            "unknown client_id or unregistered redirect_uri",
+            status_code=400,
+        )
+
+    cookie_sid, session = await session_service.resolve_session(request)
+    if cookie_sid is None or session is None:
+        return _headless_json({"status": "no_session"})
+
+    user = await _validate_silent_session(cookie_sid, session, db)
+    if user is None:
+        return _headless_json({"status": "no_session"})
+    session_id = session.get("session_id")
+    session_version = session.get("version")
+    if (
+        not isinstance(session_id, str)
+        or _SESSION_ID.fullmatch(session_id) is None
+        or not isinstance(session_version, str)
+        or not session_version
+    ):
+        await delete_session(cookie_sid)
+        return _headless_json({"status": "no_session"})
+
+    code = await oauth_service.mint_resume_auth_code(
+        user_id=str(user.id),
+        client_id=payload.client_id,
+        redirect_uri=payload.redirect_uri,
+        auth_generation=user.auth_generation,
+        code_challenge=payload.code_challenge,
+        sid=session_id,
+        session_version=session_version,
+        origin=origin,
+        state=payload.state,
+    )
+    return _headless_json(
+        {
+            "status": "resume_required",
+            "code": code,
+            "state": payload.state,
+        }
+    )
+
+
 def oauth_error(
     error: str,
     error_description: str,

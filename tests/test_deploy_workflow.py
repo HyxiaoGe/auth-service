@@ -62,3 +62,10 @@ def test_regular_deploy_keeps_existing_rollback_without_database_downgrade():
         "数据库约束向后兼容，回滚应用时不执行 alembic downgrade",
         "",
     )
+
+
+def test_self_hosted_deploy_does_not_restore_actions_cache():
+    workflow = _workflow()
+
+    assert "cache: pip" not in workflow
+    assert "SEGMENT_DOWNLOAD_TIMEOUT_MINS" not in workflow

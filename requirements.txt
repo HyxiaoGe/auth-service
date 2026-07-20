@@ -25,5 +25,5 @@ pydantic[email]==2.10.3
 pydantic-settings==2.7.0
 
 # Utilities
-python-multipart==0.0.20
+python-multipart==0.0.31
 tldextract==5.3.1

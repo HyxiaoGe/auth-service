@@ -25,7 +25,7 @@ from app.security.jwt_handler import (
     hash_token,
 )
 from app.security.password import hash_password, verify_password
-from app.security.revocation import get_user_revoked_at
+from app.security.revocation import get_user_revoked_at, is_sid_revoked
 from app.services.identity_service import find_user_by_email
 from app.utils.email import normalize_email
 from app.utils.redirect_uri import oauth_redirect_uri_allowed
@@ -206,8 +206,21 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
         token_generation = payload.get("auth_generation", 0)
         if type(token_generation) is not int or token_generation < 0:
             raise ValueError("invalid auth_generation")
+        token_sid = payload.get("sid")
+        if token_sid is not None and (not isinstance(token_sid, str) or not token_sid):
+            raise ValueError("invalid sid")
     except Exception as err:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from err
+
+    # 迁移前无 sid 的 refresh 无法归属到任何可撤销浏览器 session；若继续轮转会形成
+    # 永不受跨应用登出约束的永久分支。访问 token 仍可用于 reconcile 换取有 sid 的新会话，
+    # 但旧 refresh 必须从本版本起 fail closed，并在下次登录后自然被替换。
+    if token_sid is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token upgrade required")
+
+    # 被新中央会话替换或定向登出的 sid 不得再旋转 refresh。
+    if await is_sid_revoked(token_sid):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
     # 全部 refresh 与 logout 统一先锁 users 行，再触碰 refresh_tokens。这个锁序既避免
     # 反向锁死，也把两种竞态串行化：refresh 先提交则 logout 会撤销 successor；logout
@@ -230,6 +243,7 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
         not stored
         or stored.user_id != user.id
         or stored.auth_generation != token_generation
+        or getattr(stored, "sid", None) != token_sid
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
@@ -239,15 +253,18 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
         # reuse attack. Re-issue the successor ONCE for such a token, but only if it was killed
         # by a normal rotation, inside the narrow grace window, not already consumed, the account
         # is active, and no later SLO logout has invalidated the chain. Everything else
-        # (super-window, already-consumed, /logout-revoked, real theft) is treated as reuse and
+        # (super-window, already-consumed, session/logout-revoked, real theft) is treated as reuse and
         # revokes the user's tokens -- but ONLY for the offending app (stored.app_client_id).
         # Other first-party apps hold independent rotation lineages; nuking them too turns one
         # app's lost-rotation replay into a cross-app spurious logout (observed live: an audio
         # replay collaterally revoked the same user's valid token for another application). A deliberate
-        # account-wide logout still sweeps every app via the /logout path (app_client_id=None).
+        # account-wide logout still sweeps every app via /logout/all (app_client_id=None).
         if _within_rotation_grace(stored, user) and not await _logout_after_rotation(stored):
             stored.grace_consumed = True  # single-use gate (atomic under the row lock above)
-            return await _issue_tokens(user, stored.app_client_id, db)
+            stored_sid = getattr(stored, "sid", None)
+            if stored_sid is None:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token upgrade required")
+            return await _issue_tokens(user, stored.app_client_id, db, sid=stored_sid)
         await _revoke_all_user_tokens(stored.user_id, db, app_client_id=stored.app_client_id)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token revoked or invalid")
 
@@ -260,7 +277,10 @@ async def refresh_access_token(refresh_token_str: str, db: AsyncSession) -> Toke
     stored.revoked_at = now
     stored.rotated_at = now
 
-    tokens = await _issue_tokens(user, stored.app_client_id, db)
+    stored_sid = getattr(stored, "sid", None)
+    if stored_sid is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token upgrade required")
+    tokens = await _issue_tokens(user, stored.app_client_id, db, sid=stored_sid)
     return tokens
 
 
@@ -381,7 +401,13 @@ async def get_login_logs(
 # ==================== Internal Helpers ====================
 
 
-async def _issue_tokens(user: User, app_client_id: str | None, db: AsyncSession) -> TokenResponse:
+async def _issue_tokens(
+    user: User,
+    app_client_id: str | None,
+    db: AsyncSession,
+    *,
+    sid: str | None = None,
+) -> TokenResponse:
     """Issue a pair of access + refresh tokens for a user."""
     scopes = ["admin"] if user.is_superuser else ["user"]
     auth_generation = getattr(user, "auth_generation", 0)
@@ -392,11 +418,13 @@ async def _issue_tokens(user: User, app_client_id: str | None, db: AsyncSession)
         app_client_id=app_client_id,
         scopes=scopes,
         auth_generation=auth_generation,
+        sid=sid,
     )
     refresh_token_str, token_hash, expires_at = create_refresh_token(
         user_id=str(user.id),
         app_client_id=app_client_id,
         auth_generation=auth_generation,
+        sid=sid,
     )
 
     # Store refresh token in DB
@@ -404,6 +432,7 @@ async def _issue_tokens(user: User, app_client_id: str | None, db: AsyncSession)
         user_id=user.id,
         token_hash=token_hash,
         app_client_id=app_client_id,
+        sid=sid,
         auth_generation=auth_generation,
         expires_at=expires_at,
     )
@@ -479,3 +508,19 @@ async def logout_user(user_id: uuid.UUID, db: AsyncSession) -> None:
         return
     user.auth_generation += 1
     await _revoke_all_user_tokens(user.id, db)
+
+
+async def revoke_session_refresh_tokens(sid: str, db: AsyncSession) -> None:
+    """只撤销绑定到指定浏览器 sid 的 refresh token，不影响同用户其他设备。"""
+    result = await db.execute(
+        select(RefreshToken)
+        .where(RefreshToken.sid == sid, RefreshToken.is_revoked.is_(False))
+        .with_for_update()
+    )
+    now = datetime.now(UTC)
+    for token in result.scalars():
+        token.is_revoked = True
+        token.revoked_at = now
+        # 这是显式撤销而不是正常 rotation，必须保持 rotated_at=None，禁止 grace 复活。
+        token.rotated_at = None
+    await db.commit()

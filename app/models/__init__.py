@@ -102,6 +102,8 @@ class RefreshToken(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)  # SHA256 of the token
     app_client_id: Mapped[str | None] = mapped_column(String(64))  # which app issued this
+    # 浏览器 IdP session 绑定。迁移前存量 token 没有 sid，因此必须保持 nullable。
+    sid: Mapped[str | None] = mapped_column(String(128), index=True)
     auth_generation: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)

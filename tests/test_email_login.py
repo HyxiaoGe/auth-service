@@ -262,6 +262,35 @@ async def test_email_login_token_uses_existing_user_scope_and_uuid(monkeypatch, 
     assert captured["committed"] is True
 
 
+async def test_issue_tokens_threads_sid_into_both_jwts_and_database(monkeypatch):
+    user = _User("user@example.com")
+    captured = {}
+
+    def fake_access_token(**kwargs):
+        captured["access"] = kwargs
+        return "access"
+
+    def fake_refresh_token(**kwargs):
+        captured["refresh"] = kwargs
+        return "refresh", "hash", datetime.now(UTC) + timedelta(days=1)
+
+    class TokenDB:
+        def add(self, value):
+            captured["stored"] = value
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr(auth_service, "create_access_token", fake_access_token)
+    monkeypatch.setattr(auth_service, "create_refresh_token", fake_refresh_token)
+
+    await auth_service._issue_tokens(user, "appA", TokenDB(), sid="browser-session-sid-1234")
+
+    assert captured["access"]["sid"] == "browser-session-sid-1234"
+    assert captured["refresh"]["sid"] == "browser-session-sid-1234"
+    assert captured["stored"].sid == "browser-session-sid-1234"
+
+
 async def test_flow_cookie_nonce_is_required_and_oauth_context_stays_server_side():
     config, started = await _flow()
 

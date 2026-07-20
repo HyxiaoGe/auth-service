@@ -142,6 +142,7 @@ class _SharedRows:
             revoked_at=None,
             rotated_at=None,
             grace_consumed=False,
+            sid="browser-session-sid-generation",
         )
         self.tokens = [self.old_token]
         self.user_lock = asyncio.Lock()
@@ -190,7 +191,7 @@ class _ConcurrentDB:
             self.rows.user_lock.release()
 
 
-async def _fake_issue_tokens(user, app_client_id, db):
+async def _fake_issue_tokens(user, app_client_id, db, *, sid=None):
     successor = SimpleNamespace(
         user_id=user.id,
         token_hash="successor-hash",
@@ -200,6 +201,7 @@ async def _fake_issue_tokens(user, app_client_id, db):
         revoked_at=None,
         rotated_at=None,
         grace_consumed=False,
+        sid=sid,
     )
     db.add(successor)
     await db.commit()
@@ -218,6 +220,7 @@ async def test_refresh_wins_user_lock_then_logout_revokes_its_successor(monkeypa
             "sub": str(rows.user.id),
             "auth_generation": 0,
             "type": "refresh",
+            "sid": "browser-session-sid-generation",
         },
     )
     monkeypatch.setattr(auth_service, "hash_token", lambda _token: "old-hash")
@@ -252,6 +255,7 @@ async def test_logout_wins_user_lock_then_refresh_rejects_old_generation(monkeyp
             "sub": str(rows.user.id),
             "auth_generation": 0,
             "type": "refresh",
+            "sid": "browser-session-sid-generation",
         },
     )
     monkeypatch.setattr(auth_service, "hash_token", lambda _token: "old-hash")
@@ -275,8 +279,8 @@ async def test_logout_wins_user_lock_then_refresh_rejects_old_generation(monkeyp
     assert refresh_db.order == ["user"]
 
 
-async def test_legacy_refresh_without_generation_remains_valid_at_generation_zero(monkeypatch):
-    """迁移前 JWT 没有 generation，但对应存量行迁移为 0，应在首次登出前可用。"""
+async def test_legacy_sidless_refresh_requires_login_upgrade(monkeypatch):
+    """迁移前无 sid 的 refresh 必须拒绝，不能形成绕过 session 撤销的永久分支。"""
     rows = _SharedRows()
     db = _ConcurrentDB(rows, "refresh")
     monkeypatch.setattr(
@@ -287,7 +291,8 @@ async def test_legacy_refresh_without_generation_remains_valid_at_generation_zer
     monkeypatch.setattr(auth_service, "hash_token", lambda _token: "old-hash")
     monkeypatch.setattr(auth_service, "_issue_tokens", _fake_issue_tokens)
 
-    result = await auth_service.refresh_access_token("legacy", db)
+    with pytest.raises(HTTPException) as exc:
+        await auth_service.refresh_access_token("legacy", db)
 
-    assert result.access_token == "access"
-    assert db.order == ["user", "refresh"]
+    assert exc.value.status_code == 401
+    assert db.order == []

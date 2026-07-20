@@ -19,11 +19,14 @@ def _creds() -> HTTPAuthorizationCredentials:
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials="any.jwt.value")
 
 
-def _stub_decode(monkeypatch, *, sub: str, iat: int):
+def _stub_decode(monkeypatch, *, sub: str, iat: int, sid: str | None = None):
+    payload = {"sub": sub, "iat": iat, "email": "a@b.c", "type": "access"}
+    if sid is not None:
+        payload["sid"] = sid
     monkeypatch.setattr(
         deps,
         "decode_token",
-        lambda _tok, verify_type=None: {"sub": sub, "iat": iat, "email": "a@b.c", "type": "access"},
+        lambda _tok, verify_type=None: payload,
     )
 
 
@@ -50,6 +53,16 @@ async def test_accepts_when_no_revocation_marker(monkeypatch):
 
     user = await deps.get_current_user(credentials=_creds())
     assert user.sub == "u2"
+
+
+async def test_rejects_token_bound_to_revoked_sid(monkeypatch):
+    _stub_decode(monkeypatch, sub="u2", iat=1000, sid="browser-session-sid-1234")
+    await redis_util.revoke_sid("browser-session-sid-1234", ttl=900)
+
+    with pytest.raises(HTTPException) as error:
+        await deps.get_current_user(credentials=_creds())
+
+    assert error.value.status_code == 401
 
 
 async def test_redis_outage_does_not_break_the_auth_hot_path(monkeypatch):

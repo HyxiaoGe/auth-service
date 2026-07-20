@@ -106,7 +106,16 @@ async def _authorize(request, **kw):
 
 
 async def _live_session(sid, user_id):
-    await create_session(sid, {"user_id": user_id, "auth_time": int(time.time()), "amr": ["google"]}, ttl=100)
+    await create_session(
+        sid,
+        {
+            "session_id": f"public-{sid}",
+            "user_id": user_id,
+            "auth_time": int(time.time()),
+            "amr": ["google"],
+        },
+        ttl=100,
+    )
 
 
 class _SessionUserResult:
@@ -173,6 +182,7 @@ async def test_authorize_silent_when_session_valid(valid_app):
     assert data["app_client_id"] == "appA"
     assert data["code_challenge"] == CHALLENGE
     assert data["auth_generation"] == 0
+    assert data["sid"] == "public-sess1"
 
 
 async def test_authorize_silent_preserves_business_query_and_replaces_reserved_values(valid_app):
@@ -199,6 +209,7 @@ async def test_authorize_deletes_stale_generation_session_and_prompt_none_return
     await create_session(
         "stale-generation",
         {
+            "session_id": "public-stale-generation",
             "user_id": uid,
             "auth_generation": 2,
             "auth_time": int(time.time()),
@@ -232,6 +243,7 @@ async def test_authorize_invalid_session_falls_through_to_interactive_login(
     await create_session(
         "invalid-session-user",
         {
+            "session_id": "public-invalid-session-user",
             "user_id": uid,
             "auth_generation": session_generation,
             "auth_time": int(time.time()),

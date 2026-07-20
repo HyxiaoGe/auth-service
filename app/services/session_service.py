@@ -1,26 +1,43 @@
-"""IdP session layer: cookie <-> Redis-backed session, for SSO.
+"""IdP session layer: secret cookie key <-> Redis-backed SSO session.
 
-The session cookie holds only an opaque ``sid``; all real state lives in Redis
-(``sso_session:<sid>``). This is the IdP-side session that makes cross-app SSO
-possible: every app navigates here, and a live session yields silent auth.
+The browser cookie contains a secret ``cookie_sid`` that is used only as the Redis
+lookup key.  Tokens carry a different, public ``session_id`` from the stored payload.
+Keeping those values independent is critical: JWT payloads and URL tickets are readable
+by clients and must never reveal a value that can be replayed as the HttpOnly cookie.
 """
 
 import secrets
 import time
+from dataclasses import dataclass
 
 from fastapi import Request, Response
 
 from app.config import get_settings
-from app.utils.redis import create_session, delete_session, get_session, touch_session
+from app.security.revocation import is_sid_revoked
+from app.utils.redis import create_session as store_session
+from app.utils.redis import delete_session, get_session, touch_session
 
 settings = get_settings()
 
 
-def set_session_cookie(response: Response, sid: str) -> None:
+@dataclass(frozen=True)
+class CreatedSession:
+    """Identifiers for a newly-created central session.
+
+    ``cookie_sid`` is secret and must only be written to the cookie/Redis key.
+    ``session_id`` is public and is the only identifier allowed in tokens and
+    revocation markers.
+    """
+
+    cookie_sid: str
+    session_id: str
+
+
+def set_session_cookie(response: Response, cookie_sid: str) -> None:
     """Write the session cookie. HttpOnly always; Secure + __Host- in production."""
     response.set_cookie(
         key=settings.session_cookie_name,
-        value=sid,
+        value=cookie_sid,
         max_age=settings.session_ttl_seconds,
         path="/",
         domain=settings.session_cookie_domain,
@@ -44,23 +61,63 @@ def read_sid(request: Request) -> str | None:
 
 
 async def resolve_session(request: Request) -> tuple[str | None, dict | None]:
-    """Return (sid, payload) for a valid live session, else (None, None).
+    """Return (cookie_sid, payload) for a valid live session, else (None, None).
 
     Enforces the absolute-lifetime cap (purging the session if exceeded) and
     slides the TTL forward on every valid hit.
     """
-    sid = read_sid(request)
-    if not sid:
+    cookie_sid = read_sid(request)
+    if not cookie_sid:
         return None, None
-    payload = await get_session(sid)
+    payload = await get_session(cookie_sid)
     if payload is None:
+        return None, None
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        await delete_session(cookie_sid)
+        return None, None
+    if await is_sid_revoked(session_id):
+        await delete_session(cookie_sid)
         return None, None
     auth_time = int(payload.get("auth_time", 0))
     if int(time.time()) - auth_time > settings.session_absolute_max_seconds:
-        await delete_session(sid)
+        await delete_session(cookie_sid)
         return None, None
-    await touch_session(sid, settings.session_ttl_seconds)
-    return sid, payload
+    await touch_session(cookie_sid, settings.session_ttl_seconds)
+    return cookie_sid, payload
+
+
+async def create_session(
+    user_id: str,
+    amr: list[str],
+    auth_generation: int = 0,
+    previous_sid: str | None = None,
+) -> CreatedSession:
+    """创建全新 IdP session，但不提前撤销旧 token 会话族。
+
+    ``previous_sid`` 仅为兼容签名保留；本函数不触碰旧会话。调用方必须先成功
+    持久化继任 auth code，再删除旧中央 Cookie session；旧 token 的公开 session_id
+    则在继任 token 成功签发后撤销，避免换票失败造成不可恢复登出。
+    """
+    cookie_sid = secrets.token_urlsafe(32)
+    session_id = secrets.token_urlsafe(24)
+    now = int(time.time())
+    await store_session(
+        cookie_sid,
+        {
+            "session_id": session_id,
+            "user_id": user_id,
+            "auth_generation": auth_generation,
+            "auth_time": now,
+            "amr": amr,
+            "created_at": now,
+            "last_seen": now,
+            # 独立随机版本用于 reconcile 换票时复验，避免 sid 对应 payload 被替换。
+            "version": secrets.token_urlsafe(16),
+        },
+        settings.session_ttl_seconds,
+    )
+    return CreatedSession(cookie_sid=cookie_sid, session_id=session_id)
 
 
 async def start_session(
@@ -68,25 +125,15 @@ async def start_session(
     user_id: str,
     amr: list[str],
     auth_generation: int = 0,
+    previous_sid: str | None = None,
 ) -> str:
-    """Mint a brand-new session (fresh sid -> Redis -> Set-Cookie) and return the sid.
+    """兼容入口：创建 session，写入并返回 secret cookie lookup key。
 
-    A fresh sid is generated on every call and the inbound cookie is never reused,
-    which is the anti session-fixation guarantee.
+    业务签发路径应直接使用 ``create_session()`` 的 ``session_id``；本函数仅保留
+    既有 session 层调用约定，返回值不得写进 JWT 或 URL。
     """
-    sid = secrets.token_urlsafe(32)
-    now = int(time.time())
-    await create_session(
-        sid,
-        {
-            "user_id": user_id,
-            "auth_generation": auth_generation,
-            "auth_time": now,
-            "amr": amr,
-            "created_at": now,
-            "last_seen": now,
-        },
-        settings.session_ttl_seconds,
-    )
-    set_session_cookie(response, sid)
-    return sid
+    created = await create_session(user_id, amr, auth_generation, previous_sid)
+    if previous_sid:
+        await delete_session(previous_sid)
+    set_session_cookie(response, created.cookie_sid)
+    return created.cookie_sid

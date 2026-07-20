@@ -43,6 +43,19 @@ async def test_mint_auth_code_binds_challenge_when_given():
     assert data["code_challenge"] == CHALLENGE
 
 
+async def test_mint_auth_code_binds_browser_sid_when_given():
+    code = await oauth_service.mint_auth_code(
+        user_id="u1",
+        client_id="appA",
+        redirect_uri="https://app/cb",
+        provider="google",
+        auth_generation=3,
+        sid="browser-session-sid-1234",
+    )
+    data = await consume_auth_code(code)
+    assert data["sid"] == "browser-session-sid-1234"
+
+
 async def test_mint_auth_code_is_single_use():
     code = await oauth_service.mint_auth_code(
         user_id="u1",

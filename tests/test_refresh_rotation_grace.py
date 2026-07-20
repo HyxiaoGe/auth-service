@@ -70,6 +70,7 @@ def _stored(*, is_revoked, rotated_at, grace_consumed=False, is_active=True, use
         app_client_id=app_client_id,
         user_id=uid,
         auth_generation=0,
+        sid="browser-session-sid-rotation",
         user=SimpleNamespace(id=uid, is_active=is_active, auth_generation=0),
     )
 
@@ -82,6 +83,7 @@ def patched(monkeypatch):
             "sub": token,
             "auth_generation": 0,
             "type": "refresh",
+            "sid": "browser-session-sid-rotation",
         }
 
     monkeypatch.setattr(auth_service, "decode_token", fake_decode)
@@ -89,7 +91,7 @@ def patched(monkeypatch):
 
     calls = {"issued": False, "issued_user": None, "revoked": False, "revoked_app": "UNSET"}
 
-    async def fake_issue(user, app_client_id, db):
+    async def fake_issue(user, app_client_id, db, *, sid=None):
         calls["issued"] = True
         calls["issued_user"] = user
         return "TOKENS"
@@ -161,7 +163,7 @@ async def test_unknown_token_401_without_revoke_all(patched):
 
 
 async def test_logout_revoked_token_not_graced(patched):
-    """(6) Token killed by /logout (rotated_at NULL) is never whitelisted -> 401 + revoke-all."""
+    """(6) Token killed by explicit session/logout revocation is never whitelisted."""
     stored = _stored(is_revoked=True, rotated_at=None)
     with pytest.raises(HTTPException) as exc:
         await _refresh(stored)
@@ -235,7 +237,7 @@ async def test_reuse_revoke_scoped_to_offending_app(patched):
     """Reuse detected on app_x's token revokes the user's tokens ONLY for app_x. Other apps'
     independent rotation lineages must survive, or one app's lost-rotation replay logs the user
     out everywhere (observed live: an audio replay collaterally revoked a valid fusion token)."""
-    stored = _stored(is_revoked=True, rotated_at=None)  # /logout-style kill -> straight to revoke
+    stored = _stored(is_revoked=True, rotated_at=None)  # 显式 session 撤销 -> 直接拒绝
     with pytest.raises(HTTPException) as exc:
         await _refresh(stored)
     assert exc.value.status_code == 401
@@ -288,6 +290,6 @@ async def test_revoke_with_app_client_id_filters_by_app():
 async def test_revoke_without_app_client_id_is_account_wide():
     tokens = [_revocable()]
     db = _CapturingDB(tokens)
-    await auth_service._revoke_all_user_tokens(uuid.uuid4(), db)  # /logout path -> sweep every app
+    await auth_service._revoke_all_user_tokens(uuid.uuid4(), db)  # /logout/all -> sweep every app
     assert "app_client_id" not in str(db.stmt.whereclause)  # no per-app narrowing
     assert tokens[0].is_revoked is True and db.committed

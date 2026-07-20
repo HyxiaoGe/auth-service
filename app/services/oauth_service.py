@@ -1,9 +1,9 @@
-import base64
-import hashlib
 import hmac
 import json
 import logging
 import secrets
+
+from authlib.oauth2.rfc7636 import create_s256_code_challenge
 
 from app.config import get_settings
 from app.services.oauth_clients import create_github_client, create_google_client
@@ -38,6 +38,8 @@ async def mint_auth_code(
     provider: str,
     auth_generation: int,
     code_challenge: str | None = None,
+    sid: str | None = None,
+    source_sid: str | None = None,
 ) -> str:
     """Create a one-time auth code (Redis, single-use) and return it.
 
@@ -56,6 +58,43 @@ async def mint_auth_code(
     }
     if code_challenge is not None:
         payload["code_challenge"] = code_challenge
+    if sid is not None:
+        payload["sid"] = sid
+    if source_sid is not None and source_sid != sid:
+        payload["source_sid"] = source_sid
+    await store_auth_code(code, payload, settings.auth_code_expire_seconds)
+    return code
+
+
+async def mint_reconcile_auth_code(
+    *,
+    user_id: str,
+    client_id: str,
+    redirect_uri: str,
+    auth_generation: int,
+    code_challenge: str,
+    sid: str,
+    source_sid: str | None,
+    session_version: str,
+    origin: str,
+    state: str,
+) -> str:
+    """签发只可在同一当前 IdP cookie 会话中兑换的账户切换授权码。"""
+    code = secrets.token_urlsafe(32)
+    payload = {
+        "flow": "reconcile",
+        "user_id": user_id,
+        "app_client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "provider": "sso_reconcile",
+        "auth_generation": auth_generation,
+        "code_challenge": code_challenge,
+        "sid": sid,
+        "source_sid": source_sid,
+        "session_version": session_version,
+        "origin": origin,
+        "state": state,
+    }
     await store_auth_code(code, payload, settings.auth_code_expire_seconds)
     return code
 
@@ -72,8 +111,9 @@ def verify_pkce(code_verifier: str, code_challenge: str) -> bool:
     """
     if not code_verifier or not code_challenge:
         return False
-    digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-    expected = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    # 由 Authlib 的 RFC 7636 实现生成标准 S256 challenge，避免在业务代码中
+    # 将高熵 PKCE verifier 误建模成需要慢哈希保护的用户密码。
+    expected = create_s256_code_challenge(code_verifier)
     return hmac.compare_digest(expected, code_challenge)
 
 

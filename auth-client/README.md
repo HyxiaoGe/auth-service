@@ -12,12 +12,6 @@ pip install "seanfield-auth-client==0.3.0"
 pip install "seanfield-auth-client[fastapi]==0.3.0"
 ```
 
-需要验证尚未发布的源码时，可从仓库子目录安装：
-
-```bash
-pip install "seanfield-auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.3.0#subdirectory=auth-client"
-```
-
 支持 Python 3.10–3.13。包内包含 `py.typed`，类型检查器可直接读取公开 API 的类型信息。
 
 ## 快速上手
@@ -28,8 +22,13 @@ pip install "seanfield-auth-client[fastapi] @ git+https://github.com/HyxiaoGe/au
 from fastapi import FastAPI, Depends
 from auth_service_client import JWTValidator, require_auth, require_scopes
 
-# 指向你部署的 Auth Service 的 JWKS 端点
-validator = JWTValidator(jwks_url="http://localhost:8100/.well-known/jwks.json")
+# 三项安全约束不能省略：签发者、本应用 audience、access token 类型
+validator = JWTValidator(
+    jwks_url="http://localhost:8100/.well-known/jwks.json",
+    issuer="http://localhost:8100",
+    audience="app_your_client_id",
+    require_token_type="access",
+)
 
 app = FastAPI()
 
@@ -56,7 +55,12 @@ async def admin_only(user=Depends(require_scopes(validator, "admin"))):
 ```python
 from auth_service_client import JWTValidator
 
-validator = JWTValidator(jwks_url="http://localhost:8100/.well-known/jwks.json")
+validator = JWTValidator(
+    jwks_url="http://localhost:8100/.well-known/jwks.json",
+    issuer="http://localhost:8100",
+    audience="app_your_client_id",
+    require_token_type="access",
+)
 
 def verify_request(authorization_header: str):
     token = authorization_header.replace("Bearer ", "")
@@ -70,16 +74,21 @@ def verify_request(authorization_header: str):
 ```python
 validator = JWTValidator(
     jwks_url="http://localhost:8100/.well-known/jwks.json",
-    issuer="http://localhost:8100",     # 可选: 验证 token 签发者 (iss)
-    audience="app_your_client_id",      # 可选: 验证 token 目标应用 (aud = 你的 client_id)
-    require_token_type="access",        # 可选: 拒绝 refresh token 走保护路由
+    issuer="http://localhost:8100",     # 必填: 锁定 token 签发者 (iss)
+    audience="app_your_client_id",      # 必填: 锁定目标应用 (aud = 你的 client_id)
+    require_token_type="access",        # 必填: 拒绝 refresh token 走保护路由
     cache_ttl=300,                      # JWKS 缓存时间 (秒)
 )
 ```
 
-> 生产接入建议三项 (`issuer` / `audience` / `require_token_type`) 全开 ——
+> 业务项目必须把三项 (`issuer` / `audience` / `require_token_type`) 全开 ——
 > IdP 不校验 `aud`，由消费方自己锁定 token 是发给本应用的。详见
 > [认证契约](https://github.com/HyxiaoGe/auth-service/blob/main/docs/AUTH_CONTRACT.md)。
+
+本 SDK 不连接 Redis。若业务要求跨应用账户切换或全设备退出后立即拒绝已签发 access token，
+消费端还需在验签后检查 Auth Service 共享 Redis 中的 `revoked_sid:{sid}` 与
+`revoked_user:{sub}`；不做该检查时，旧 access token 会保持有效到其 `exp`。完整规则见
+[接入指南](https://github.com/HyxiaoGe/auth-service/blob/main/docs/INTEGRATION_GUIDE.md#71-立即撤销可选但推荐)。
 
 ## 发布维护
 

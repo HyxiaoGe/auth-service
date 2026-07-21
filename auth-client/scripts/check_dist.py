@@ -15,7 +15,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - 仅 Python 3.10
     import tomli as tomllib
 
-EXPECTED_NAME = "auth-client"
+EXPECTED_NAME = "seanfield-auth-client"
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_VERSION = tomllib.loads(
     (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -107,11 +107,11 @@ def _validate_sdist(sdist: Path) -> None:
         _fail(f"sdist contains build residue: {residue}")
 
     expected_egg_info = {
-        "auth_client.egg-info/PKG-INFO",
-        "auth_client.egg-info/SOURCES.txt",
-        "auth_client.egg-info/dependency_links.txt",
-        "auth_client.egg-info/requires.txt",
-        "auth_client.egg-info/top_level.txt",
+        "seanfield_auth_client.egg-info/PKG-INFO",
+        "seanfield_auth_client.egg-info/SOURCES.txt",
+        "seanfield_auth_client.egg-info/dependency_links.txt",
+        "seanfield_auth_client.egg-info/requires.txt",
+        "seanfield_auth_client.egg-info/top_level.txt",
     }
     actual_egg_info = {
         name

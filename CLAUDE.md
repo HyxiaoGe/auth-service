@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Centralized authentication microservice (FastAPI + Python 3.12) that issues RS256-signed JWTs for multiple downstream applications. Each downstream app registers as an `Application` with a `client_id`/`client_secret`; tokens carry the app's `client_id` in the `aud` claim. Downstream services validate tokens via the `/.well-known/jwks.json` JWKS endpoint using the `auth-client` pip package (located in `auth-client/`).
+Centralized authentication microservice (FastAPI + Python 3.12) that issues RS256-signed JWTs for multiple downstream applications. Each downstream app registers as an `Application` with a `client_id`/`client_secret`; tokens carry the app's `client_id` in the `aud` claim. Downstream services validate tokens via the `/.well-known/jwks.json` JWKS endpoint using the `seanfield-auth-client` pip package (located in `auth-client/`).
 
 ## Build & Run
 

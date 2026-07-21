@@ -30,6 +30,7 @@ def test_release_version_is_consistent():
 def test_pypi_metadata_exposes_supported_runtime_and_project_links():
     metadata = _project_metadata()
 
+    assert metadata["name"] == "seanfield-auth-client"
     assert metadata["license"] == "Apache-2.0"
     assert metadata["license-files"] == ["LICENSE"]
     assert metadata["readme"] == {"file": "README.md", "content-type": "text/markdown"}

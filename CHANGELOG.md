@@ -15,7 +15,8 @@
 ### 变更
 
 - Python Auth Client 升级到 `0.3.0`，将导入包名从冲突风险较高的 `auth` 改为
-  `auth_service_client`，并补齐 PyPI 元数据、类型标记、产物校验和 Trusted Publishing。
+  `auth_service_client`，使用唯一的 PyPI 发行名 `seanfield-auth-client`，并补齐元数据、
+  类型标记、产物校验和 Trusted Publishing。
 
 ### 安全
 

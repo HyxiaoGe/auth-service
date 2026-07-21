@@ -35,7 +35,7 @@ assert auth_service_client.AuthenticatedUser.__name__ == "AuthenticatedUser"
 try:
     auth_service_client.require_auth
 except ModuleNotFoundError as error:
-    assert "auth-client[fastapi]" in str(error)
+    assert "seanfield-auth-client[fastapi]" in str(error)
 else:
     raise AssertionError("FastAPI helper must require the optional extra")
 '''

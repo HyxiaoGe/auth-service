@@ -14,7 +14,7 @@ redis[hiredis]==5.2.1
 # JWT & Security
 PyJWT[crypto]==2.13.0
 cryptography==48.0.1
-pwdlib[argon2]==0.2.1
+pwdlib[argon2]==0.3.0
 
 # OAuth
 httpx==0.28.1

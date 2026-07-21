@@ -39,7 +39,7 @@ def __getattr__(name: str) -> Any:
         if error.name == "fastapi" or (error.name and error.name.startswith("fastapi.")):
             raise ModuleNotFoundError(
                 "FastAPI helpers require the optional dependency; "
-                "install it with `pip install 'auth-client[fastapi]'`."
+                "install it with `pip install 'seanfield-auth-client[fastapi]'`."
             ) from error
         raise
 

@@ -2,7 +2,7 @@
 Example: backend (FastAPI) integration with the shared auth-client SDK.
 
 Install:
-    pip install "auth-client[fastapi]==0.3.0"
+    pip install "seanfield-auth-client[fastapi]==0.3.0"
 
 The SDK (`auth-client`) does exactly one thing: verify an RS256 access token against the
 IdP's JWKS and return an `AuthenticatedUser`. Everything else is your app's job:

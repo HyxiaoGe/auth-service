@@ -6,16 +6,16 @@
 
 ```bash
 # 基础 JWT 校验器
-pip install "auth-client==0.3.0"
+pip install "seanfield-auth-client==0.3.0"
 
 # FastAPI 依赖工厂
-pip install "auth-client[fastapi]==0.3.0"
+pip install "seanfield-auth-client[fastapi]==0.3.0"
 ```
 
 需要验证尚未发布的源码时，可从仓库子目录安装：
 
 ```bash
-pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.3.0#subdirectory=auth-client"
+pip install "seanfield-auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.3.0#subdirectory=auth-client"
 ```
 
 支持 Python 3.10–3.13。包内包含 `py.typed`，类型检查器可直接读取公开 API 的类型信息。
@@ -89,6 +89,7 @@ smoke，再通过 PyPI Trusted Publishing 上传；不会读取长期 PyPI API T
 
 PyPI 项目需要配置以下 Trusted Publisher：
 
+- PyPI Project：`seanfield-auth-client`
 - Owner：`HyxiaoGe`
 - Repository：`auth-service`
 - Workflow：`python-client-publish.yml`

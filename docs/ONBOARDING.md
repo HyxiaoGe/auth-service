@@ -59,7 +59,7 @@ Save the `client_id`. Notes:
 Install the shared validator SDK:
 
 ```bash
-pip install "auth-client[fastapi]==0.3.0"
+pip install "seanfield-auth-client[fastapi]==0.3.0"
 ```
 
 Configure one validator from env and expose a thin `get_current_user` that returns **your

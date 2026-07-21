@@ -409,7 +409,7 @@ Use [`auth-client`](../auth-client). Configure the validator to enforce the full
 contract — not just the signature:
 
 ```python
-from auth import JWTValidator
+from auth_service_client import JWTValidator
 
 validator = JWTValidator(
     jwks_url=f"{AUTH_URL}/.well-known/jwks.json",

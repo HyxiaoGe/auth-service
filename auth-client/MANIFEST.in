@@ -1,0 +1,5 @@
+include LICENSE README.md pyproject.toml
+recursive-include auth_service_client *.py py.typed
+prune tests
+global-exclude *.py[cod] .DS_Store
+global-exclude __pycache__

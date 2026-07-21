@@ -16,7 +16,7 @@ import time
 
 import jwt
 import pytest
-from auth import AuthenticatedUser, JWTValidator
+from auth_service_client import AuthenticatedUser, JWTValidator
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 

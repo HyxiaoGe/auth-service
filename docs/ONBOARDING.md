@@ -59,7 +59,7 @@ Save the `client_id`. Notes:
 Install the shared validator SDK:
 
 ```bash
-pip install "auth-client[fastapi] @ git+https://github.com/HyxiaoGe/auth-service.git@auth-client-v0.2.1#subdirectory=auth-client"
+pip install "auth-client[fastapi]==0.3.0"
 ```
 
 Configure one validator from env and expose a thin `get_current_user` that returns **your
@@ -69,7 +69,7 @@ and upserting a local user row are your app's job. See
 for the full pattern; the essentials:
 
 ```python
-from auth import JWTValidator
+from auth_service_client import JWTValidator
 
 validator = JWTValidator(
     jwks_url=f"{AUTH_SERVICE_URL}/.well-known/jwks.json",

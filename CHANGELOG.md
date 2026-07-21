@@ -12,6 +12,11 @@
   永不进入 JWT、授权码、URL 或业务服务。
 - 新增 `revoked_sid:{sid}` 定向撤销与显式 `POST /auth/logout/all` 全设备登出。
 
+### 变更
+
+- Python Auth Client 升级到 `0.3.0`，将导入包名从冲突风险较高的 `auth` 改为
+  `auth_service_client`，并补齐 PyPI 元数据、类型标记、产物校验和 Trusted Publishing。
+
 ### 安全
 
 - reconcile code 绑定 Origin、client、redirect、state、PKCE、公开 sid 与 session version，

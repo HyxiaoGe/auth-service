@@ -34,6 +34,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+          python -m pip install "build==1.3.0" "twine==6.2.0"
           python -m pip install -e "./auth-client[fastapi]"
 
       - name: Architecture check
@@ -44,3 +45,9 @@ jobs:
 
       - name: Lint
         run: python -m ruff check .
+
+      - name: Build and validate Python client distributions
+        run: |
+          python -m build auth-client --outdir "$RUNNER_TEMP/auth-client-dist"
+          python -m twine check "$RUNNER_TEMP"/auth-client-dist/*
+          python auth-client/scripts/check_dist.py "$RUNNER_TEMP/auth-client-dist"

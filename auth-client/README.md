@@ -6,10 +6,10 @@
 
 ```bash
 # 基础 JWT 校验器
-pip install "seanfield-auth-client==0.3.0"
+pip install "seanfield-auth-client==0.3.1"
 
 # FastAPI 依赖工厂
-pip install "seanfield-auth-client[fastapi]==0.3.0"
+pip install "seanfield-auth-client[fastapi]==0.3.1"
 ```
 
 支持 Python 3.10–3.13。包内包含 `py.typed`，类型检查器可直接读取公开 API 的类型信息。
@@ -78,12 +78,18 @@ validator = JWTValidator(
     audience="app_your_client_id",      # 必填: 锁定目标应用 (aud = 你的 client_id)
     require_token_type="access",        # 必填: 拒绝 refresh token 走保护路由
     cache_ttl=300,                      # JWKS 缓存时间 (秒)
+    leeway_seconds=2,                   # 可选: 容忍有界时钟偏差 (秒)
 )
 ```
 
 > 业务项目必须把三项 (`issuer` / `audience` / `require_token_type`) 全开 ——
 > IdP 不校验 `aud`，由消费方自己锁定 token 是发给本应用的。详见
 > [认证契约](https://github.com/HyxiaoGe/auth-service/blob/main/docs/AUTH_CONTRACT.md)。
+
+`leeway_seconds` 会同时作用于 JWT 的 `iat`、`nbf` 和 `exp` 校验。默认值是 `0`，保持已有
+严格校验行为；只有在消费服务与 Auth Service 存在已测得的轻微时钟偏差时才显式设置。
+建议先校准系统时间，再使用 `2`–`5` 秒的最小容错，不要用较大值掩盖持续时钟漂移，因为
+该值也会把过期 token 的接受窗口延长同样的秒数。
 
 本 SDK 不连接 Redis。若业务要求跨应用账户切换或全设备退出后立即拒绝已签发 access token，
 消费端还需在验签后检查 Auth Service 共享 Redis 中的 `revoked_sid:{sid}` 与
@@ -105,4 +111,4 @@ PyPI 项目需要配置以下 Trusted Publisher：
 - Environment：`pypi`
 
 发布前必须同步更新 `pyproject.toml` 与 `auth_service_client/__init__.py` 中的版本。标签必须
-与包版本完全一致，例如 `0.3.0` 只能由 `auth-client-v0.3.0` 发布。
+与包版本完全一致，例如 `0.3.1` 只能由 `auth-client-v0.3.1` 发布。

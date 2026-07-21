@@ -21,7 +21,7 @@ def test_release_version_is_consistent():
     init_source = (PACKAGE_ROOT / "auth_service_client" / "__init__.py").read_text(encoding="utf-8")
     version_match = re.search(r'^__version__ = "([^"]+)"$', init_source, flags=re.MULTILINE)
 
-    assert metadata["version"] == "0.3.0"
+    assert metadata["version"] == "0.3.1"
     assert re.fullmatch(r"\d+\.\d+\.\d+", metadata["version"])
     assert version_match is not None
     assert version_match.group(1) == metadata["version"]

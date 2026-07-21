@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from auth_service_client.dependencies import require_auth, require_scopes
 
 __all__ = ["JWTValidator", "AuthenticatedUser", "require_auth", "require_scopes"]
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 _FASTAPI_HELPERS = frozenset({"require_auth", "require_scopes"})
 

@@ -12,7 +12,7 @@
 
 ```bash
 npm install auth-client-web@^0.4.0
-pip install "seanfield-auth-client[fastapi]==0.3.0"
+pip install "seanfield-auth-client[fastapi]==0.3.1"
 ```
 
 ```python

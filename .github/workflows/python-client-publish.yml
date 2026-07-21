@@ -1,0 +1,152 @@
+name: Publish Python auth client
+
+on:
+  push:
+    tags: ["auth-client-v*"]
+
+jobs:
+  test:
+    name: Test on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install SDK and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pytest==9.1.1" "pytest-asyncio==1.4.0" "ruff==0.15.10" "tomli==2.4.0; python_version < '3.11'"
+          python -m pip install -e "./auth-client[fastapi]"
+
+      - name: Test SDK
+        run: python -m pytest -q auth-client/tests
+
+      - name: Lint SDK and packaging checks
+        if: matrix.python-version == '3.12'
+        run: python -m ruff check auth-client
+
+  build:
+    name: Build and validate distributions
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "build==1.3.0" "twine==6.2.0"
+
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::PyPI release tag must point to a commit contained in main"
+            exit 1
+          fi
+          package_version="$(python -c 'import tomllib; print(tomllib.load(open("auth-client/pyproject.toml", "rb"))["project"]["version"])')"
+          test "$RELEASE_TAG" = "auth-client-v$package_version"
+
+      - name: Build wheel and source distribution
+        run: python -m build auth-client --outdir auth-client/dist
+
+      - name: Validate distribution metadata and contents
+        run: |
+          python -m twine check auth-client/dist/*
+          python auth-client/scripts/check_dist.py auth-client/dist
+
+      - name: Smoke install base wheel without FastAPI
+        run: |
+          python -m venv "$RUNNER_TEMP/auth-client-base-smoke"
+          "$RUNNER_TEMP/auth-client-base-smoke/bin/python" -m pip install auth-client/dist/*.whl
+          PACKAGE_VERSION="$(python -c 'import tomllib; print(tomllib.load(open("auth-client/pyproject.toml", "rb"))["project"]["version"])')"
+          export PACKAGE_VERSION
+          "$RUNNER_TEMP/auth-client-base-smoke/bin/python" - <<'PY'
+          import importlib.metadata
+          import importlib.resources
+          import importlib.util
+          import os
+
+          assert importlib.util.find_spec("fastapi") is None
+          assert importlib.util.find_spec("auth") is None
+          import auth_service_client
+
+          expected_version = os.environ["PACKAGE_VERSION"]
+          assert importlib.metadata.version("auth-client") == expected_version
+          assert auth_service_client.__version__ == expected_version
+          assert importlib.resources.files("auth_service_client").joinpath("py.typed").is_file()
+          try:
+              auth_service_client.require_auth
+          except ModuleNotFoundError as error:
+              assert "auth-client[fastapi]" in str(error)
+          else:
+              raise AssertionError("FastAPI helper must require the optional extra")
+          PY
+
+      - name: Smoke install FastAPI extra
+        run: |
+          wheel_path="$(printf '%s\n' auth-client/dist/*.whl)"
+          python -m venv "$RUNNER_TEMP/auth-client-fastapi-smoke"
+          "$RUNNER_TEMP/auth-client-fastapi-smoke/bin/python" -m pip install "${wheel_path}[fastapi]"
+          "$RUNNER_TEMP/auth-client-fastapi-smoke/bin/python" -c 'from auth_service_client import require_auth, require_scopes; assert callable(require_auth); assert callable(require_scopes)'
+
+      - name: Smoke coexist with the PyPI auth package
+        run: |
+          python -m venv "$RUNNER_TEMP/auth-client-coexist-smoke"
+          "$RUNNER_TEMP/auth-client-coexist-smoke/bin/python" -m pip install auth-client/dist/*.whl "auth==1.4.0"
+          "$RUNNER_TEMP/auth-client-coexist-smoke/bin/python" -c 'import importlib.metadata; import auth; import auth_service_client; assert importlib.metadata.version("auth") == "1.4.0"; assert auth.__name__ == "auth"; assert auth_service_client.JWTValidator.__name__ == "JWTValidator"'
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: auth-client-distributions
+          path: auth-client/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/auth-client
+    permissions:
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: auth-client-distributions
+          path: dist/
+
+      - name: Publish distributions with Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0

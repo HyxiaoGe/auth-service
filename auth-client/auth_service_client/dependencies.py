@@ -3,7 +3,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from auth.validator import AuthenticatedUser, JWTValidator
+from auth_service_client.validator import AuthenticatedUser, JWTValidator
 
 _bearer = HTTPBearer(auto_error=False)
 

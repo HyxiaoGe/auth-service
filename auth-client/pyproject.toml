@@ -4,13 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auth-client"
-version = "0.2.1"
+version = "0.3.0"
 description = "Lightweight JWT validator for services using Auth Service"
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "Auth Service contributors" }]
 keywords = ["authentication", "jwt", "jwks", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Typing :: Typed",
+]
 dependencies = [
     "PyJWT[crypto]>=2.13.0",
     "httpx>=0.25.0",
@@ -18,8 +33,10 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/HyxiaoGe/auth-service"
+Homepage = "https://github.com/HyxiaoGe/auth-service/tree/main/auth-client"
 Documentation = "https://github.com/HyxiaoGe/auth-service/tree/main/auth-client"
+Source = "https://github.com/HyxiaoGe/auth-service"
+Issues = "https://github.com/HyxiaoGe/auth-service/issues"
 
 [project.optional-dependencies]
 fastapi = [
@@ -27,4 +44,7 @@ fastapi = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["auth*"]
+include = ["auth_service_client*"]
+
+[tool.setuptools.package-data]
+auth_service_client = ["py.typed"]

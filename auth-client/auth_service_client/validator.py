@@ -1,4 +1,4 @@
-"""JWT Validator that verifies tokens using JWKS from the Auth Service."""
+"""使用 Auth Service JWKS 验证 JWT。"""
 
 import time
 from dataclasses import dataclass, field

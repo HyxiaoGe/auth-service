@@ -45,7 +45,7 @@ Callback page (redirect_uri)
   └─ auth-client-web.handleCallback()
        1. validate returned state == stored state (CSRF)
        2. POST ${AUTH_URL}/auth/oauth/token { code, client_id, code_verifier }
-            → { access_token, refresh_token, token_type:"bearer", expires_in:900 }
+            → { access_token, refresh_token, token_type:"bearer", expires_in:<configured seconds> }
        3. GET ${AUTH_URL}/auth/userinfo  (Bearer access_token)
 
 API calls
@@ -296,10 +296,12 @@ Request (JSON):
   `Origin` 和 `credentials: "include"`；普通授权码保持兼容，可不发送这两个字段。
 
 Response `200`:
-```json
-{ "access_token": "<jwt>", "refresh_token": "<jwt>", "token_type": "bearer", "expires_in": 900 }
+```text
+{ "access_token": "<jwt>", "refresh_token": "<jwt>", "token_type": "bearer",
+  "expires_in": <configured integer seconds> }
 ```
-`expires_in` is the **access** token lifetime in seconds. Errors → `400` with a message.
+`expires_in` is the configured **access** token lifetime in seconds. Consumers MUST use the
+returned value and must not hard-code a deployment's lifetime. Errors → `400` with a message.
 
 ### `POST /auth/token/refresh` — rotate tokens
 
@@ -381,14 +383,14 @@ signature. No secret is shared with consumers.
 
 Both tokens are RS256 JWTs. Header: `{ "alg":"RS256", "kid":"auth-key-1", "typ":"JWT" }`.
 
-**Access token** (15 min):
+**Access token** (deployment-configured lifetime):
 
 | Claim | Value |
 |-------|-------|
 | `sub` | user id (UUID string) |
 | `email` | user email |
 | `iss` | `${AUTH_URL}` (the IdP base url, verbatim) |
-| `iat` / `exp` | issued-at / +15 min |
+| `iat` / `exp` | issued-at / configured `ACCESS_TOKEN_EXPIRE_MINUTES` |
 | `jti` | unique id |
 | `type` | `"access"` |
 | `auth_generation` | user's authentication generation when the token was issued |
@@ -448,7 +450,7 @@ JWT 自身有效期；auth-service 的 refresh endpoint 也执行同一检查。
 显式 `/auth/logout/all` 另外使用 per-user marker：
 
 Access tokens are stateless JWTs, so the signature check above passes even after the user
-logged out elsewhere — the token stays valid until `exp` (≤15 min). To honor explicit
+logged out elsewhere — the token stays valid until its configured `exp`. To honor explicit
 "logout all devices", `POST /auth/logout/all` writes a **per-user revocation marker** into the
 **shared Redis** that every consumer on this deployment already connects to:
 
@@ -474,7 +476,7 @@ before trusting the token. It is one Redis `GET` per authenticated request (chea
 shared single-box Redis). **Fail open:** because the check is now on the auth hot path of
 every request, a Redis read error must be swallowed (log + treat as not-revoked), not turned
 into a `500` — otherwise a single shared-Redis blip locks every user out of every app. The
-revocation lag then degrades to the token's own `exp` (≤15 min) until Redis recovers.
+revocation lag then degrades to the token's own configured `exp` until Redis recovers.
 Likewise, `/auth/logout/all` writes the user marker best-effort: a write failure is logged but does
 not fail the logout (the cookie + session are still cleared and refresh tokens still revoked).
 

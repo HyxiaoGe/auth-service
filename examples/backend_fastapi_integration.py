@@ -4,13 +4,19 @@ Example: backend (FastAPI) integration with the shared auth-client SDK.
 Install:
     pip install "seanfield-auth-client[fastapi]==0.3.0"
 
-The SDK (`auth-client`) does exactly one thing: verify an RS256 access token against the
+The SDK (`seanfield-auth-client`, imported as `auth_service_client`) does exactly one
+thing: verify an RS256 access token against the
 IdP's JWKS and return an `AuthenticatedUser`. Everything else is your app's job:
 
   * build ONE validator from env (with issuer + audience + token-type hardening),
   * map the SDK's `AuthenticatedUser` to YOUR OWN user type (don't leak the SDK type),
   * translate verification failures into your error envelope,
   * (optionally) enrich from /auth/userinfo and upsert a local user row.
+
+For immediate cross-app/session revocation, also check `revoked_sid:{sid}` and
+`revoked_user:{sub}` in the Auth Service's shared Redis after JWT verification. The SDK
+does not connect to Redis; without that application-side check, an access token remains
+valid until its configured `exp`. See docs/INTEGRATION_GUIDE.md section 7.1.
 
 This file is a copy-paste starting point. See docs/AUTH_CONTRACT.md for the wire contract.
 """
@@ -20,21 +26,25 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from auth_service_client import JWTValidator  # from the auth-client SDK
+from auth_service_client import JWTValidator
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # ---------------------------------------------------------------------------
-# 1. Config (env-driven)
+# 1. Config (env-driven and fail-fast)
 # ---------------------------------------------------------------------------
-AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "http://localhost:8100")
-AUTH_SERVICE_CLIENT_ID = os.environ.get("AUTH_SERVICE_CLIENT_ID", "")
+AUTH_SERVICE_URL = os.environ.get("AUTH_SERVICE_URL", "").strip().rstrip("/")
+AUTH_SERVICE_CLIENT_ID = os.environ.get("AUTH_SERVICE_CLIENT_ID", "").strip()
+if not AUTH_SERVICE_URL or not AUTH_SERVICE_CLIENT_ID:
+    raise RuntimeError("AUTH_SERVICE_URL and AUTH_SERVICE_CLIENT_ID are required")
 AUTH_SERVICE_JWKS_URL = os.environ.get(
-    "AUTH_SERVICE_JWKS_URL", f"{AUTH_SERVICE_URL.rstrip('/')}/.well-known/jwks.json"
-)
+    "AUTH_SERVICE_JWKS_URL", f"{AUTH_SERVICE_URL}/.well-known/jwks.json"
+).strip()
+if not AUTH_SERVICE_JWKS_URL:
+    raise RuntimeError("AUTH_SERVICE_JWKS_URL must not be empty")
 
 # ---------------------------------------------------------------------------
-# 2. One validator, built lazily (easy to patch in tests; no import-time env reads)
+# 2. One validator, built lazily
 # ---------------------------------------------------------------------------
 _validator: JWTValidator | None = None
 

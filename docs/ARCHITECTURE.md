@@ -26,7 +26,7 @@ database -> config
 ## JWT Strategy
 
 - RS256 asymmetric keys: auth service signs with private key, consumers verify with public key via JWKS
-- Access tokens: 15-min expiry; Refresh tokens: 30-day expiry, stored in DB as SHA256 hash, rotated on use
+- Access tokens: deployment-configured expiry; Refresh tokens: deployment-configured expiry, stored in DB as SHA256 hash, rotated on use
 - 中央 Cookie 只保存 secret lookup key；Redis payload 中另存公开 `session_id`。新浏览器流的
   access/auth-code/refresh token 只贯穿公开 `sid`，refresh 数据库行同样绑定该值
 - Token reuse detection: reusing a revoked refresh token revokes that application's lineage;

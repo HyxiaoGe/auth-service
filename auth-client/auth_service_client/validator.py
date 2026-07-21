@@ -1,5 +1,6 @@
 """使用 Auth Service JWKS 验证 JWT。"""
 
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -35,12 +36,23 @@ class JWTValidator:
         audience: str | None = None,
         cache_ttl: int = 300,  # seconds to cache JWKS
         require_token_type: str | None = None,  # opt-in: enforce the JWT "type" claim
+        leeway_seconds: float = 0.0,  # 可选：容忍有界时钟偏差
     ):
+        if isinstance(leeway_seconds, bool) or not isinstance(leeway_seconds, int | float):
+            raise ValueError("leeway_seconds must be a finite non-negative number")
+        try:
+            normalized_leeway = float(leeway_seconds)
+        except OverflowError as error:
+            raise ValueError("leeway_seconds must be a finite non-negative number") from error
+        if not math.isfinite(normalized_leeway) or normalized_leeway < 0:
+            raise ValueError("leeway_seconds must be a finite non-negative number")
+
         self.jwks_url = jwks_url
         self.issuer = issuer
         self.audience = audience
         self.cache_ttl = cache_ttl
         self.require_token_type = require_token_type
+        self.leeway_seconds = normalized_leeway
         self._jwks_cache: dict | None = None
         self._cache_time: float = 0
 
@@ -136,6 +148,7 @@ class JWTValidator:
             signing_key,
             algorithms=["RS256"],
             options=options,
+            leeway=self.leeway_seconds,
             **kwargs,
         )
 
@@ -157,6 +170,7 @@ class JWTValidator:
             signing_key,
             algorithms=["RS256"],
             options=options,
+            leeway=self.leeway_seconds,
             **kwargs,
         )
 

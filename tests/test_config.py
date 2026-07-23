@@ -144,6 +144,42 @@ def test_https_with_explicit_cookie_domain_cannot_use_host_prefix():
     assert s.session_cookie_secure is True
 
 
+def test_development_accepts_exact_loopback_auth_browser_alias():
+    settings = Settings(
+        auth_browser_aliases="http://localhost:8100,http://127.0.0.1:18100",
+    )
+
+    assert settings.auth_browser_alias_list == [
+        "http://localhost:8100",
+        "http://127.0.0.1:18100",
+    ]
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "https://auth.example.com",
+        "http://192.168.1.10:8100",
+        "http://localhost:8100/path",
+        "http://localhost:8100?query=1",
+        "http://user@localhost:8100",
+        " http://localhost:8100",
+        "http://localhost:8100/",
+    ],
+)
+def test_auth_browser_alias_rejects_non_loopback_or_non_origin_values(alias):
+    with pytest.raises(ValidationError, match="auth_browser_aliases"):
+        Settings(auth_browser_aliases=alias)
+
+
+def test_auth_browser_alias_is_development_only():
+    with pytest.raises(ValidationError, match="development"):
+        Settings(
+            app_env="production",
+            auth_browser_aliases="http://localhost:8100",
+        )
+
+
 def test_email_login_is_disabled_until_all_security_and_smtp_config_is_present():
     assert Settings().email_login_ready is False
     assert Settings().email_headless_login_ready is False

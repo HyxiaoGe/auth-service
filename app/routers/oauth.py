@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,7 +12,12 @@ from app.schemas import OAuthTokenExchangeRequest, TokenResponse
 from app.security.revocation import is_sid_revoked, revoke_sid
 from app.services import auth_service, oauth_service, session_service
 from app.utils.oauth_redirect import oauth_redirect
-from app.utils.redirect_uri import oauth_redirect_uri_allowed
+from app.utils.origin import (
+    auth_browser_alias_origin_matches,
+    schemeful_web_origin_same_site,
+    trusted_auth_request_origin,
+)
+from app.utils.redirect_uri import oauth_redirect_origin, oauth_redirect_uri_allowed
 from app.utils.redis import consume_auth_code, delete_session, get_session
 
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
@@ -156,6 +161,7 @@ async def github_callback(
 async def exchange_code_for_tokens(
     payload: OAuthTokenExchangeRequest,
     request: Request,
+    response: Response,
     db: AsyncSession = Depends(get_db),
 ):
     """Exchange a one-time authorization code for access + refresh tokens."""
@@ -186,6 +192,12 @@ async def exchange_code_for_tokens(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or expired authorization code",
         )
+    bound_cookie_sid = await _bound_cookie_sid_for_exchange(
+        code_data,
+        payload,
+        request,
+        db,
+    )
 
     # 与 logout/refresh 统一先锁用户行。若 code 在 logout 前签发，等待锁后会看到
     # 已递增的 generation，从而在签发任何 token 前失败。
@@ -221,6 +233,11 @@ async def exchange_code_for_tokens(
             await revoke_sid(source_sid, settings.sid_revocation_ttl_seconds)
         except Exception:
             logger.warning("failed to write source session revocation marker after reconcile", exc_info=True)
+    # Cookie 复制是 token exchange 的最后一步：PKCE/client/session binding、用户代际、
+    # token 持久化、审计与来源 session 退休全部成功后，才把同一 secret lookup key
+    # 写到浏览器实际命中的 canonical/loopback alias host。
+    if bound_cookie_sid is not None:
+        session_service.set_session_cookie(response, bound_cookie_sid)
     return tokens
 
 
@@ -261,6 +278,85 @@ async def _redirect_uri_registered(client_id: str, redirect_uri: str, db: AsyncS
     )
     app = result.scalar_one_or_none()
     return app is not None and redirect_uri in app.redirect_uris
+
+
+async def _bound_cookie_sid_for_exchange(
+    code_data: dict,
+    payload: OAuthTokenExchangeRequest,
+    request: Request | None,
+    db: AsyncSession,
+) -> str | None:
+    """仅为显式 loopback alias 复验 Cookie 绑定，返回可安全复制的 lookup key。
+
+    公网 canonical auth-service 已在 OAuth callback 写入自己的 host-only Cookie，
+    无需在 token exchange 复制；它也必须继续兼容跨站 RP。只有请求实际命中显式
+    development loopback alias 时，才启用严格 Origin、redirect 与 Redis session
+    绑定校验。legacy code 没有 PKCE challenge，始终保持原有 token-only 行为。
+    """
+    cookie_sid = code_data.get("cookie_sid")
+    if not isinstance(cookie_sid, str) or not cookie_sid:
+        return None
+    if not code_data.get("code_challenge"):
+        return None
+    frontchannel_origin = (
+        trusted_auth_request_origin(
+            str(request.url),
+            settings.auth_base_url,
+            settings.auth_browser_alias_list,
+            peer_host=request.client.host if request.client is not None else None,
+            trusted_proxy_networks=settings.trusted_proxy_networks,
+            forwarded_proto=request.headers.get("x-forwarded-proto"),
+            forwarded_host=request.headers.get("x-forwarded-host"),
+        )
+        if request is not None
+        else None
+    )
+    if not auth_browser_alias_origin_matches(
+        frontchannel_origin,
+        settings.auth_browser_alias_list,
+    ):
+        return None
+
+    redirect_uri = code_data.get("redirect_uri")
+    expected_origin = oauth_redirect_origin(redirect_uri) if isinstance(redirect_uri, str) else None
+    request_origin = request.headers.get("origin")
+    if (
+        expected_origin is None
+        or request_origin != expected_origin
+        or request_origin not in settings.cors_origin_list
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_grant: browser origin mismatch",
+        )
+    if not schemeful_web_origin_same_site(frontchannel_origin, request_origin):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_grant: untrusted auth alias",
+        )
+    if not await _redirect_uri_registered(payload.client_id, redirect_uri, db):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_grant: client redirect registration changed",
+        )
+
+    bound_session = await session_service.resolve_cookie_sid(cookie_sid)
+    code_sid = code_data.get("sid")
+    code_version = code_data.get("session_version")
+    if (
+        bound_session is None
+        or not isinstance(code_sid, str)
+        or not isinstance(code_version, str)
+        or bound_session.get("session_id") != code_sid
+        or bound_session.get("version") != code_version
+        or bound_session.get("user_id") != code_data.get("user_id")
+        or bound_session.get("auth_generation", 0) != code_data.get("auth_generation")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_grant: session binding changed",
+        )
+    return cookie_sid
 
 
 async def _recover_or_error_page(
@@ -442,6 +538,8 @@ async def _social_redirect(
         code_challenge=state_data.get("code_challenge"),
         sid=created.session_id,
         source_sid=source_sid,
+        cookie_sid=created.cookie_sid,
+        session_version=created.version,
     )
     if previous_cookie_sid:
         await delete_session(previous_cookie_sid)

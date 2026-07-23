@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from unittest.mock import AsyncMock
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
@@ -93,15 +94,31 @@ def _request(
     cookie_value: str | None = None,
     csrf_token: str | None = None,
     ip: str = "203.0.113.8",
+    auth_origin: str = "https://auth.example.com",
 ) -> Request:
+    parsed_auth_origin = urlsplit(auth_origin)
+    assert parsed_auth_origin.hostname is not None
+    server_port = parsed_auth_origin.port or (443 if parsed_auth_origin.scheme == "https" else 80)
     headers = []
+    headers.append((b"host", parsed_auth_origin.netloc.encode()))
     if origin is not None:
         headers.append((b"origin", origin.encode()))
     if cookie_name and cookie_value:
         headers.append((b"cookie", f"{cookie_name}={cookie_value}".encode()))
     if csrf_token is not None:
         headers.append((b"x-csrf-token", csrf_token.encode()))
-    return Request({"type": "http", "method": "POST", "headers": headers, "client": (ip, 1234)})
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "scheme": parsed_auth_origin.scheme,
+            "server": (parsed_auth_origin.hostname, server_port),
+            "path": "/auth/email/headless",
+            "query_string": b"",
+            "headers": headers,
+            "client": (ip, 1234),
+        }
+    )
 
 
 def _json(response) -> dict:
@@ -251,7 +268,10 @@ async def test_headless_start_allows_localhost_http_same_site(monkeypatch):
     monkeypatch.setattr(email_sender, "_smtp_verified", True)
 
     response = await auth.start_email_headless(
-        _request(origin="http://localhost:3000"),
+        _request(
+            origin="http://localhost:3000",
+            auth_origin="http://localhost:8100",
+        ),
         _start_payload(redirect_uri="http://localhost:3000/auth/callback"),
         db=_DB(),
     )
@@ -565,6 +585,8 @@ async def test_headless_verify_returns_only_authorization_code_and_starts_sso_se
         "auth_generation": 0,
         "code_challenge": CHALLENGE,
         "sid": code_data["sid"],
+        "cookie_sid": code_data["cookie_sid"],
+        "session_version": code_data["session_version"],
     }
     assert code_data["sid"]
     session_cookie = next(value for value in response.headers.getlist("set-cookie") if "sso_session=" in value)
@@ -573,7 +595,10 @@ async def test_headless_verify_returns_only_authorization_code_and_starts_sso_se
     assert session["user_id"] == str(user.id)
     assert session["amr"] == ["email_otp"]
     assert session["session_id"] == code_data["sid"]
-    assert session["session_id"] != sid  # HttpOnly cookie lookup key 永不进入 token/code
+    assert code_data["cookie_sid"] == sid
+    assert code_data["session_version"] == session["version"]
+    # lookup key 只存在服务端一次性 code payload，不进入浏览器 JSON、URL 或 bearer token。
+    assert session["session_id"] != sid
 
 
 async def test_headless_verify_limits_missing_flow_by_client_ip_before_flow_or_otp_lookup(monkeypatch, fake_redis):

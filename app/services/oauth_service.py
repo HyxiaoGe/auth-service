@@ -40,6 +40,8 @@ async def mint_auth_code(
     code_challenge: str | None = None,
     sid: str | None = None,
     source_sid: str | None = None,
+    cookie_sid: str | None = None,
+    session_version: str | None = None,
 ) -> str:
     """Create a one-time auth code (Redis, single-use) and return it.
 
@@ -62,6 +64,11 @@ async def mint_auth_code(
         payload["sid"] = sid
     if source_sid is not None and source_sid != sid:
         payload["source_sid"] = source_sid
+    # secret cookie lookup key 只进入 PKCE 保护的一次性 Redis payload。legacy code
+    # 属于纯 bearer grant，绝不能借此获得中央 SSO Cookie 能力。
+    if code_challenge is not None and cookie_sid is not None and session_version is not None:
+        payload["cookie_sid"] = cookie_sid
+        payload["session_version"] = session_version
     await store_auth_code(code, payload, settings.auth_code_expire_seconds)
     return code
 

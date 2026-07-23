@@ -43,6 +43,41 @@ async def test_mint_auth_code_binds_challenge_when_given():
     assert data["code_challenge"] == CHALLENGE
 
 
+async def test_pkce_auth_code_privately_binds_cookie_session_when_given():
+    code = await oauth_service.mint_auth_code(
+        user_id="u1",
+        client_id="appA",
+        redirect_uri="https://app/cb",
+        provider="google",
+        auth_generation=3,
+        code_challenge=CHALLENGE,
+        cookie_sid="secret-cookie-lookup-key",
+        session_version="stable-session-version",
+    )
+
+    data = await consume_auth_code(code)
+
+    assert data["cookie_sid"] == "secret-cookie-lookup-key"
+    assert data["session_version"] == "stable-session-version"
+
+
+async def test_legacy_auth_code_never_carries_cookie_session_secret():
+    code = await oauth_service.mint_auth_code(
+        user_id="u1",
+        client_id="appA",
+        redirect_uri="https://app/cb",
+        provider="google",
+        auth_generation=3,
+        cookie_sid="must-not-be-persisted",
+        session_version="must-not-be-persisted",
+    )
+
+    data = await consume_auth_code(code)
+
+    assert "cookie_sid" not in data
+    assert "session_version" not in data
+
+
 async def test_mint_auth_code_binds_browser_sid_when_given():
     code = await oauth_service.mint_auth_code(
         user_id="u1",

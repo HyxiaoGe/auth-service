@@ -31,6 +31,7 @@ class CreatedSession:
 
     cookie_sid: str
     session_id: str
+    version: str
 
 
 def set_session_cookie(response: Response, cookie_sid: str) -> None:
@@ -69,22 +70,32 @@ async def resolve_session(request: Request) -> tuple[str | None, dict | None]:
     cookie_sid = read_sid(request)
     if not cookie_sid:
         return None, None
+    payload = await resolve_cookie_sid(cookie_sid)
+    return (cookie_sid, payload) if payload is not None else (None, None)
+
+
+async def resolve_cookie_sid(cookie_sid: str) -> dict | None:
+    """按 secret lookup key 复验并续期中央会话，不依赖当前请求 Cookie。
+
+    仅供 auth-service 内部的一次性 code 绑定复验；调用方不得把 ``cookie_sid``
+    返回到 JSON、URL 或日志。
+    """
     payload = await get_session(cookie_sid)
     if payload is None:
-        return None, None
+        return None
     session_id = payload.get("session_id")
     if not isinstance(session_id, str) or not session_id:
         await delete_session(cookie_sid)
-        return None, None
+        return None
     if await is_sid_revoked(session_id):
         await delete_session(cookie_sid)
-        return None, None
+        return None
     auth_time = int(payload.get("auth_time", 0))
     if int(time.time()) - auth_time > settings.session_absolute_max_seconds:
         await delete_session(cookie_sid)
-        return None, None
+        return None
     await touch_session(cookie_sid, settings.session_ttl_seconds)
-    return cookie_sid, payload
+    return payload
 
 
 async def create_session(
@@ -101,6 +112,7 @@ async def create_session(
     """
     cookie_sid = secrets.token_urlsafe(32)
     session_id = secrets.token_urlsafe(24)
+    version = secrets.token_urlsafe(16)
     now = int(time.time())
     await store_session(
         cookie_sid,
@@ -113,11 +125,11 @@ async def create_session(
             "created_at": now,
             "last_seen": now,
             # 独立随机版本用于 reconcile 换票时复验，避免 sid 对应 payload 被替换。
-            "version": secrets.token_urlsafe(16),
+            "version": version,
         },
         settings.session_ttl_seconds,
     )
-    return CreatedSession(cookie_sid=cookie_sid, session_id=session_id)
+    return CreatedSession(cookie_sid=cookie_sid, session_id=session_id, version=version)
 
 
 async def start_session(

@@ -9,7 +9,7 @@ code_verifier -- otherwise every current app breaks.
 import uuid
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app.routers import oauth
 from app.schemas import OAuthTokenExchangeRequest
@@ -31,7 +31,12 @@ async def test_token_rejects_wrong_verifier_when_code_has_challenge():
     )
     payload = OAuthTokenExchangeRequest(code="c-wrong", client_id="appA", code_verifier="bogus")
     with pytest.raises(HTTPException) as exc:
-        await oauth.exchange_code_for_tokens(payload=payload, request=None, db=None)
+        await oauth.exchange_code_for_tokens(
+            payload=payload,
+            request=None,
+            response=Response(),
+            db=None,
+        )
     assert exc.value.status_code == 400
     assert "invalid_grant" in exc.value.detail
 
@@ -44,7 +49,12 @@ async def test_token_rejects_missing_verifier_when_code_has_challenge():
     )
     payload = OAuthTokenExchangeRequest(code="c-missing", client_id="appA")  # no code_verifier
     with pytest.raises(HTTPException) as exc:
-        await oauth.exchange_code_for_tokens(payload=payload, request=None, db=None)
+        await oauth.exchange_code_for_tokens(
+            payload=payload,
+            request=None,
+            response=Response(),
+            db=None,
+        )
     assert exc.value.status_code == 400
     assert "invalid_grant" in exc.value.detail
 

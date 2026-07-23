@@ -6,7 +6,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 from app.routers import auth, oauth
 from app.schemas import OAuthTokenExchangeRequest, SessionReconcileRequest, TokenResponse
@@ -366,6 +366,7 @@ async def test_resume_code_exchange_rejects_changed_binding(
                 code_verifier=VERIFIER,
             ),
             _request(sid="resume-cookie-secret", origin=request_origin, bearer=None),
+            response=Response(),
             db=None,
         )
 
@@ -429,6 +430,7 @@ async def test_resume_code_exchange_issues_tokens_for_bound_session(monkeypatch)
             code_verifier=VERIFIER,
         ),
         _request(sid="resume-cookie-secret", bearer=None),
+        response=Response(),
         db=_DB({user_id: user}),
     )
 
@@ -482,6 +484,7 @@ async def test_reconcile_code_exchange_rejects_cookie_session_change(monkeypatch
                 code_verifier=VERIFIER,
             ),
             _request(sid="new-cookie-sid"),
+            response=Response(),
             db=None,
         )
 
@@ -550,6 +553,7 @@ async def test_reconcile_code_exchange_issues_tokens_for_bound_sid(monkeypatch):
             code_verifier=VERIFIER,
         ),
         _request(sid="target-cookie-secret"),
+        response=Response(),
         db=_DB({user_id: user}),
     )
 
@@ -579,6 +583,7 @@ async def test_normal_auth_code_for_superseded_sid_cannot_issue_tokens(monkeypat
         await oauth.exchange_code_for_tokens(
             OAuthTokenExchangeRequest(code="stale-session-code", client_id=CLIENT_ID),
             _request(sid=None),
+            response=Response(),
             db=None,
         )
 

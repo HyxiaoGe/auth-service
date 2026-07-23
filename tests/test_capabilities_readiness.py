@@ -31,9 +31,10 @@ async def _get(
     *,
     client_address: tuple[str, int] = ("127.0.0.1", 1234),
     headers: dict[str, str] | None = None,
+    base_url: str = "http://test",
 ):
     transport = ASGITransport(app=app, client=client_address)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url=base_url) as client:
         return await client.get(path, headers=headers)
 
 
@@ -116,6 +117,7 @@ async def test_auth_capabilities_reports_headless_only_when_its_switch_and_email
     response = await _get(
         _capabilities_path(client_id="fusion", redirect_uri=LOCAL_CALLBACK),
         headers={"Origin": "http://localhost:3000"},
+        base_url="http://localhost:8100",
     )
 
     assert response.status_code == 200
@@ -177,6 +179,7 @@ async def test_auth_capabilities_requires_active_app_and_exact_redirect(monkeypa
     response = await _get(
         _capabilities_path(client_id="fusion", redirect_uri=LOCAL_CALLBACK),
         headers={"Origin": "http://localhost:3000"},
+        base_url="http://localhost:8100",
     )
 
     assert response.status_code == 200
@@ -208,6 +211,7 @@ async def test_auth_capabilities_rejects_cross_site_even_when_origin_redirect_an
     response = await _get(
         _capabilities_path(client_id="fusion", redirect_uri=redirect_uri),
         headers={"Origin": "https://app.other.com"},
+        base_url="https://auth.example.com",
     )
 
     assert response.status_code == 200
@@ -239,6 +243,7 @@ async def test_auth_capabilities_allows_same_site_sibling_subdomain(monkeypatch)
     response = await _get(
         _capabilities_path(client_id="fusion", redirect_uri=redirect_uri),
         headers={"Origin": "https://dev.seanfield.org"},
+        base_url="https://authmail.seanfield.org",
     )
 
     assert response.status_code == 200
@@ -269,6 +274,7 @@ async def test_auth_capabilities_keeps_headless_off_for_non_web_origin(monkeypat
     response = await _get(
         _capabilities_path(client_id="fusion", redirect_uri=LOCAL_CALLBACK),
         headers=headers,
+        base_url="http://localhost:8100",
     )
 
     assert response.status_code == 200

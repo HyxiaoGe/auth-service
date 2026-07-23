@@ -1,5 +1,5 @@
 from functools import lru_cache
-from ipaddress import ip_network
+from ipaddress import ip_address, ip_network
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -117,6 +117,9 @@ class Settings(BaseSettings):
 
     # Auth service base URL
     auth_base_url: str = "http://localhost:8100"
+    # 仅用于 development 本地联调：浏览器可通过这些受信 loopback origin 访问同一
+    # auth-service。列表只描述 auth-service 自身的前台别名，不是 RP/CORS 白名单。
+    auth_browser_aliases: str = ""
 
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173,app://-"
@@ -124,6 +127,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def auth_browser_alias_list(self) -> list[str]:
+        return [o.strip() for o in self.auth_browser_aliases.split(",") if o.strip()]
 
     @property
     def is_production(self) -> bool:
@@ -199,6 +206,42 @@ class Settings(BaseSettings):
             raise ValueError("jwt_trusted issuer is only allowed in development")
         if self.jwt_trusted_issuer and urlsplit(self.jwt_trusted_issuer).scheme.lower() != "https":
             raise ValueError("jwt_trusted_issuer must use https")
+        aliases = [value for value in self.auth_browser_aliases.split(",") if value]
+        if aliases and self.app_env != "development":
+            raise ValueError("auth_browser_aliases is only allowed in development")
+        normalized_aliases: set[str] = set()
+        for value in aliases:
+            if value != value.strip():
+                raise ValueError("auth_browser_aliases entries must not contain outer whitespace")
+            try:
+                parsed = urlsplit(value)
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError("auth_browser_aliases entries must be valid loopback origins") from exc
+            host = parsed.hostname
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+                or host is None
+                or (parsed.netloc.endswith(":") and port is None)
+            ):
+                raise ValueError("auth_browser_aliases entries must be exact loopback origins")
+            is_loopback = host == "localhost"
+            if not is_loopback:
+                try:
+                    is_loopback = ip_address(host).is_loopback
+                except ValueError:
+                    is_loopback = False
+            if not is_loopback:
+                raise ValueError("auth_browser_aliases entries must use loopback hosts")
+            if value in normalized_aliases:
+                raise ValueError("auth_browser_aliases entries must be unique")
+            normalized_aliases.add(value)
         if (
             self.password_auth_enabled
             and self.password_auth_internal_token != self.password_auth_internal_token.strip()

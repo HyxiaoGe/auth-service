@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi import Request
+from fastapi import Request, Response
 from pydantic import ValidationError
 
 from app.config import Settings
@@ -219,6 +219,7 @@ async def test_email_auth_code_exchange_keeps_stable_user_uuid_and_login_method(
     tokens = await oauth.exchange_code_for_tokens(
         payload=OAuthTokenExchangeRequest(code=code, client_id="appA", code_verifier=VERIFIER),
         request=_request(),
+        response=Response(),
         db=_DB([user]),
     )
 

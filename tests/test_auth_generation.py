@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Request, Response
 
 from app.models import RefreshToken, User
 from app.routers import oauth
@@ -92,6 +92,7 @@ async def test_logout_invalidates_unredeemed_auth_code_for_every_login_flow(prov
         await oauth.exchange_code_for_tokens(
             payload=OAuthTokenExchangeRequest(code=f"stale-{provider}", client_id="appA"),
             request=_request(),
+            response=Response(),
             db=db,
         )
 
@@ -117,6 +118,7 @@ async def test_legacy_auth_code_without_generation_fails_closed():
         await oauth.exchange_code_for_tokens(
             payload=OAuthTokenExchangeRequest(code="legacy-no-generation", client_id="appA"),
             request=_request(),
+            response=Response(),
             db=_TokenExchangeDB(None),
         )
 

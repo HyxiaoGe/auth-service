@@ -35,7 +35,7 @@ from app.security.revocation import revoke_sid, revoke_user_access_tokens
 from app.services import auth_service, email_login_service, email_sender, oauth_service, session_service
 from app.services.email_sender import EmailSender, get_email_sender
 from app.utils.oauth_redirect import oauth_redirect
-from app.utils.origin import schemeful_web_origin_same_site
+from app.utils.origin import schemeful_web_origin_same_site, trusted_auth_request_origin
 from app.utils.redirect_uri import oauth_redirect_origin, oauth_redirect_uri_allowed
 from app.utils.redis import delete_session, get_session
 
@@ -351,11 +351,21 @@ def _headless_send_request_rate_limited(retry_after: int) -> JSONResponse:
 
 def _headless_origin_matches(request: Request, redirect_uri: str) -> bool:
     origin = request.headers.get("origin")
+    frontchannel_origin = trusted_auth_request_origin(
+        str(request.url),
+        settings.auth_base_url,
+        settings.auth_browser_alias_list,
+        peer_host=request.client.host if request.client is not None else None,
+        trusted_proxy_networks=settings.trusted_proxy_networks,
+        forwarded_proto=request.headers.get("x-forwarded-proto"),
+        forwarded_host=request.headers.get("x-forwarded-host"),
+    )
     return bool(
         origin
         and origin != "null"
         and _headless_web_origin_allowed(origin)
-        and schemeful_web_origin_same_site(settings.auth_base_url, origin)
+        and frontchannel_origin is not None
+        and schemeful_web_origin_same_site(frontchannel_origin, origin)
         and origin in settings.cors_origin_list
         and origin == oauth_redirect_origin(redirect_uri)
     )
@@ -673,6 +683,8 @@ async def verify_email_headless(
         code_challenge=flow["code_challenge"],
         sid=created.session_id,
         source_sid=source_sid,
+        cookie_sid=created.cookie_sid,
+        session_version=created.version,
     )
     if previous_cookie_sid:
         await delete_session(previous_cookie_sid)
@@ -968,6 +980,8 @@ async def authorize(
             auth_generation=session_user.auth_generation,
             code_challenge=code_challenge,
             sid=session["session_id"],
+            cookie_sid=cookie_sid,
+            session_version=session.get("version"),
         )
         params = {"code": code}
         if state is not None:

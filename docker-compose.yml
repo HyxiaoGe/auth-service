@@ -16,12 +16,21 @@ services:
     restart: unless-stopped
     mem_limit: 256m
     networks:
-      - nano-banana-network
-      - postgres_default
-      - middleware_default
-      - ai-audio-network
+      auth_edge:
+        ipv4_address: 10.203.0.3
+        aliases:
+          - auth-edge-service
+      nano-banana-network: {}
+      postgres_default: {}
+      middleware_default: {}
+      ai-audio-network: {}
 
 networks:
+  # Dedicated ingress path shared only with nginx-proxy. The proxy has a fixed
+  # address so TRUSTED_PROXY_CIDRS remains valid across container recreation.
+  auth_edge:
+    external: true
+    name: auth-edge
   nano-banana-network:
     external: true
   postgres_default:

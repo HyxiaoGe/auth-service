@@ -50,6 +50,7 @@ jobs:
           DATABASE_URL_SYNC=postgresql://external:secret@db.example:5432/auth \
           REDIS_URL=redis://cache.example:6379/0 \
           docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.migrate.yml config --quiet
 
   pr-image:
     name: Container build

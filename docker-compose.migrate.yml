@@ -1,0 +1,7 @@
+services:
+  auth:
+    # One-off migration containers run alongside the live auth service, so they
+    # must not inherit its dedicated ingress address.
+    networks:
+      auth_edge:
+        ipv4_address: !reset null

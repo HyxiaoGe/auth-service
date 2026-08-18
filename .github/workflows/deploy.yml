@@ -126,7 +126,7 @@ jobs:
             # 旧实例不理解 auth_generation；迁移前先停流量，关闭双写协议窗口。
             docker compose -f docker-compose.yml stop auth
           fi
-          if ! docker compose -f docker-compose.yml run --rm --no-deps auth alembic upgrade head; then
+          if ! docker compose -f docker-compose.yml -f docker-compose.migrate.yml run --rm --no-deps auth alembic upgrade head; then
             migration_failed=1
             if [ "$auth_generation_cutover" -eq 1 ]; then
               echo "::error::数据库迁移失败，恢复已停止的旧容器"

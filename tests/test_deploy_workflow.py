@@ -8,6 +8,10 @@ def _workflow() -> str:
 
 
 GENERATION_MIGRATION = "alembic/versions/c8d9e0f1a2b3_add_auth_generation.py"
+MIGRATION_COMMAND = (
+    "docker compose -f docker-compose.yml -f docker-compose.migrate.yml "
+    "run --rm --no-deps auth alembic upgrade head"
+)
 
 
 def test_deploy_detects_auth_generation_cutover_from_previous_sha():
@@ -21,7 +25,7 @@ def test_deploy_builds_stops_migrates_then_switches_for_generation_cutover():
     deploy_sequence = workflow.split("# 先构建新镜像，再按迁移类型安全切换。", 1)[1]
     build = "docker compose -f docker-compose.yml build auth"
     stop = "docker compose -f docker-compose.yml stop auth"
-    migrate = "docker compose -f docker-compose.yml run --rm --no-deps auth alembic upgrade head"
+    migrate = MIGRATION_COMMAND
     switch = "docker compose -f docker-compose.yml up -d --no-build auth"
 
     assert build in deploy_sequence
@@ -40,11 +44,14 @@ def test_generation_migration_failure_restores_source_and_restarts_stopped_old_c
     assert "docker compose -f docker-compose.yml start auth" in recovery
     assert "http://127.0.0.1:8100/health" in recovery
     assert "docker compose -f docker-compose.yml build auth" not in recovery
-    assert (
-        'if ! docker compose -f docker-compose.yml run --rm --no-deps auth alembic upgrade head; then'
-        in workflow
-    )
+    assert f"if ! {MIGRATION_COMMAND}; then" in workflow
     assert "数据库迁移失败，恢复已停止的旧容器" in workflow
+
+
+def test_migration_container_does_not_reuse_live_static_ip():
+    override = (Path(__file__).parents[1] / "docker-compose.migrate.yml").read_text()
+
+    assert "ipv4_address: !reset null" in override
 
 
 def test_generation_migration_success_disables_legacy_sha_rollback_on_new_container_failure():

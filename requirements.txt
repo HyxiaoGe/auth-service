@@ -1,6 +1,6 @@
 # Web framework
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
 
 # Database
 sqlalchemy[asyncio]==2.0.36
@@ -18,12 +18,12 @@ pwdlib[argon2]==0.2.1
 
 # OAuth
 httpx==0.28.1
-authlib==1.6.12
+authlib==1.7.2
 
 # Validation & Settings
-pydantic[email]==2.10.3
-pydantic-settings==2.7.0
+pydantic[email]==2.13.4
+pydantic-settings==2.15.0
 
 # Utilities
 python-multipart==0.0.32
-tldextract==5.3.1
+tldextract==5.3.2

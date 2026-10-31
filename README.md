@@ -85,7 +85,7 @@ docker compose -f compose.yaml -f docker-compose.build.yml up -d --build
 
 服务启动后：
 
-- API 文档：<http://localhost:8100/docs>
+- API 文档：<http://localhost:8100/docs>（默认关闭，本地需在 `.env` 设 `API_DOCS_ENABLED=true`）
 - 健康检查：<http://localhost:8100/health>
 - JWKS：<http://localhost:8100/.well-known/jwks.json>
 

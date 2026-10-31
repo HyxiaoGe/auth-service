@@ -210,7 +210,8 @@ async def init(config: InitConfig):
 
     print()
     print("🚀 初始化完成！")
-    print(f"   API 文档：http://localhost:{settings.app_port}/docs")
+    if settings.api_docs_enabled:
+        print(f"   API 文档：http://localhost:{settings.app_port}/docs")
 
 
 def main(arguments: Sequence[str] | None = None, environ: Mapping[str, str] | None = None) -> int:

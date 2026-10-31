@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8100
     app_debug: bool = True
+    # 交互式 API 文档（/docs、/redoc、/openapi.json）会公开全部接口清单，服务直面公网，默认关闭；
+    # 仅本地开发需要时打开。
+    api_docs_enabled: bool = False
 
     # Database
     database_url: str = "postgresql+asyncpg://auth:auth@localhost:5432/auth"

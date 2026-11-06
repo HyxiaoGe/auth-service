@@ -128,7 +128,7 @@ def test_login_code_message_has_branded_multipart_content_and_transactional_head
     monkeypatch.setattr(email_sender.smtplib, "SMTP", FakeSMTP)
     sender = SMTPEmailSender(_settings(smtp_from_name="<Fusion & Friends>"))
 
-    sender._send_sync("user@example.com", "123456", 300)
+    sender._send_sync("user@example.com", "123456", 300, "<Fusion & Friends>")
 
     message = sent_messages[0]
     assert str(message["Subject"]) == "<Fusion & Friends> 登录验证码"
@@ -158,10 +158,13 @@ async def test_wait_for_smtp_verification_observes_monitor_state_without_sending
 async def test_wait_for_smtp_verification_times_out_fail_closed(monkeypatch):
     monkeypatch.setattr(email_sender, "_smtp_verified", False)
 
-    assert await asyncio.wait_for(
-        email_sender.wait_for_smtp_verification(0.01, poll_seconds=0.001),
-        timeout=0.1,
-    ) is False
+    assert (
+        await asyncio.wait_for(
+            email_sender.wait_for_smtp_verification(0.01, poll_seconds=0.001),
+            timeout=0.1,
+        )
+        is False
+    )
     assert email_sender.is_smtp_verified() is False
 
 
@@ -293,9 +296,7 @@ async def test_recipient_refused_does_not_revoke_global_smtp_verification(monkey
             return None
 
         def send_message(self, _message):
-            raise email_sender.smtplib.SMTPRecipientsRefused(
-                {"user@example.com": (550, b"mailbox unavailable")}
-            )
+            raise email_sender.smtplib.SMTPRecipientsRefused({"user@example.com": (550, b"mailbox unavailable")})
 
     monkeypatch.setattr(email_sender.smtplib, "SMTP", FakeSMTP)
     monkeypatch.setattr(email_sender, "_smtp_verified", True)
@@ -304,3 +305,49 @@ async def test_recipient_refused_does_not_revoke_global_smtp_verification(monkey
         await SMTPEmailSender(_settings()).send_login_code("user@example.com", "123456", 300)
 
     assert email_sender.is_smtp_verified() is True
+
+
+@pytest.mark.asyncio
+async def test_login_code_uses_requesting_application_name_and_falls_back_to_global_brand(monkeypatch):
+    """邮件里写发起登录的应用名（applications.name），而不是全局的 SMTP_FROM_NAME；没传应用名才退回全局。"""
+    calls = []
+    sender = SMTPEmailSender(_settings(smtp_from_name="Fusion"))
+    monkeypatch.setattr(sender, "_send_sync", lambda *args: calls.append(args))
+
+    await sender.send_login_code("user@example.com", "123456", 300, delivery_id="f1", brand_name="LingDraft")
+    await sender.send_login_code("user@example.com", "123456", 300, delivery_id="f2", brand_name="  ")
+    await sender.send_login_code("user@example.com", "123456", 300, delivery_id="f3")
+
+    assert [c[3] for c in calls] == ["LingDraft", "Fusion", "Fusion"]
+    assert email_sender.resolve_brand_name(_settings(smtp_from_name="  "), None) == "login@example.com"
+
+
+def test_login_code_message_from_header_carries_the_application_name(monkeypatch):
+    sent_messages = []
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def starttls(self, **_kwargs):
+            return None
+
+        def login(self, *_args):
+            return None
+
+        def send_message(self, message):
+            sent_messages.append(message)
+
+    monkeypatch.setattr(email_sender.smtplib, "SMTP", FakeSMTP)
+    SMTPEmailSender(_settings(smtp_from_name="Fusion"))._send_sync("user@example.com", "654321", 300, "LingDraft")
+
+    message = sent_messages[0]
+    assert str(message["Subject"]) == "LingDraft 登录验证码"
+    assert str(message["From"]) == "LingDraft <login@example.com>"
+    assert "你的 LingDraft 登录验证码是：654321" in message.get_body(preferencelist=("plain",)).get_content()

@@ -51,10 +51,13 @@ class _Result:
 
 
 class _DB:
-    def __init__(self, users=()):
+    def __init__(self, users=(), app_name="Fusion"):
         self.users = list(users)
+        self.app_name = app_name  # applications.name；None 当作查不到
 
-    async def execute(self, _query):
+    async def execute(self, query):
+        if "applications" in str(query):
+            return _Result([self.app_name] if self.app_name is not None else [])
         return _Result(self.users)
 
 
@@ -64,9 +67,11 @@ class _FakeSender:
     def __init__(self, *, fail=False):
         self.fail = fail
         self.sent = []
+        self.brands = []
 
-    async def send_login_code(self, recipient, code, ttl_seconds, delivery_id=None):
+    async def send_login_code(self, recipient, code, ttl_seconds, delivery_id=None, brand_name=None):
         self.sent.append((recipient, code, ttl_seconds))
+        self.brands.append(brand_name)
         if self.fail:
             raise EmailDeliveryError("provider unavailable")
 
@@ -162,7 +167,7 @@ def test_smtp_starttls_uses_system_default_certificate_context(monkeypatch):
 
     monkeypatch.setattr(email_sender.ssl, "create_default_context", lambda: context)
     monkeypatch.setattr(email_sender.smtplib, "SMTP", FakeSMTP)
-    SMTPEmailSender(_settings())._send_sync("user@example.com", "123456", 300)
+    SMTPEmailSender(_settings())._send_sync("user@example.com", "123456", 300, "Fusion")
 
     assert calls["starttls"] == {"context": context}
     assert calls["sent"] is True
@@ -188,7 +193,7 @@ def test_smtp_ssl_uses_system_default_certificate_context(monkeypatch):
     monkeypatch.setattr(email_sender.ssl, "create_default_context", lambda: context)
     monkeypatch.setattr(email_sender.smtplib, "SMTP_SSL", FakeSMTPSSL)
     SMTPEmailSender(_settings(smtp_starttls=False, smtp_use_ssl=True))._send_sync(
-        "user@example.com", "123456", 300
+        "user@example.com", "123456", 300, "Fusion"
     )
 
     assert calls["connect"][2]["context"] is context
@@ -303,8 +308,7 @@ async def test_flow_cookie_nonce_is_required_and_oauth_context_stays_server_side
     assert "nonce" not in stored
     assert await email_login_service.get_bound_email_flow(started.flow_id, "wrong", config=config) is None
     assert (
-        await email_login_service.get_bound_email_flow(started.flow_id, started.cookie_value, config=config)
-        == stored
+        await email_login_service.get_bound_email_flow(started.flow_id, started.cookie_value, config=config) == stored
     )
 
 
@@ -325,12 +329,15 @@ async def test_browser_flow_limit_evicts_oldest_flow_and_recovery():
     _, third = await _flow(config, browser_cookie=first.cookie_value)
 
     assert await get_email_flow(first.flow_id) is None
-    assert await email_login_service.get_bound_email_flow_recovery(
-        first.flow_id,
-        first.cookie_value,
-        first.csrf_token,
-        config=config,
-    ) is None
+    assert (
+        await email_login_service.get_bound_email_flow_recovery(
+            first.flow_id,
+            first.cookie_value,
+            first.csrf_token,
+            config=config,
+        )
+        is None
+    )
     assert await get_email_flow(second.flow_id) is not None
     assert await get_email_flow(third.flow_id) is not None
 
@@ -391,6 +398,31 @@ async def test_unknown_email_is_delivered_but_inactive_email_is_not():
     assert sender.sent[0][0] == "missing@example.com"
 
 
+async def test_login_code_is_sent_under_the_requesting_application_name(fake_redis):
+    """邮件主题和正文写发起登录的应用名（applications.name），查不到才让发信器退回全局品牌。"""
+    config, started = await _flow()
+    user = _User("user@example.com")
+    sender = _FakeSender()
+
+    for app_name in ("LingDraft", None):
+        result = await email_login_service.request_login_code(
+            flow_id=started.flow_id,
+            flow_cookie=started.cookie_value,
+            email="user@example.com",
+            client_ip="10.0.0.8",
+            db=_DB([user], app_name=app_name),
+            sender=sender,
+            config=config,
+        )
+        assert result.accepted is True
+        cooldown_keys = [key async for key in fake_redis.scan_iter("email_cooldown:*")]
+        if cooldown_keys:
+            await fake_redis.delete(*cooldown_keys)
+
+    assert sender.brands == ["LingDraft", None]
+
+
+@pytest.mark.asyncio
 async def test_delivery_failure_keeps_uncertain_code_verifiable_with_generic_response():
     config, started = await _flow()
     user = _User("user@example.com")
@@ -523,13 +555,16 @@ async def test_successful_resend_invalidates_old_code(fake_redis):
         config=config,
     )
 
-    assert await email_login_service.verify_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        code=first_sender.sent[0][1],
-        db=db,
-        config=config,
-    ) is None
+    assert (
+        await email_login_service.verify_login_code(
+            flow_id=started.flow_id,
+            flow_cookie=started.cookie_value,
+            code=first_sender.sent[0][1],
+            db=db,
+            config=config,
+        )
+        is None
+    )
     verified = await email_login_service.verify_login_code(
         flow_id=started.flow_id,
         flow_cookie=started.cookie_value,
@@ -575,13 +610,16 @@ async def test_staging_new_code_does_not_extend_expired_active_code(monkeypatch,
     record = json.loads(raw)
     assert record["active"] is None
     assert record["pending"]["expires_at"] == 1_021.0
-    assert await email_login_service.verify_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        code=first_sender.sent[0][1],
-        db=db,
-        config=config,
-    ) is None
+    assert (
+        await email_login_service.verify_login_code(
+            flow_id=started.flow_id,
+            flow_cookie=started.cookie_value,
+            code=first_sender.sent[0][1],
+            db=db,
+            config=config,
+        )
+        is None
+    )
     assert deferred.delivery is not None
 
 
@@ -677,10 +715,7 @@ async def test_send_rejection_does_not_poison_target_email_or_other_rate_buckets
             **limits,
         )
     )[0]
-    before = {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_*")
-    }
+    before = {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_*")}
 
     allowed, _ = await acquire_email_send_slot(
         "victim-email",
@@ -694,10 +729,7 @@ async def test_send_rejection_does_not_poison_target_email_or_other_rate_buckets
     assert allowed is False
     assert await fake_redis.exists("email_cooldown:victim-email") == 0
     assert await fake_redis.exists("email_rate_email:victim-email") == 0
-    assert {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_*")
-    } == before
+    assert {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_*")} == before
 
 
 @pytest.mark.parametrize(
@@ -729,10 +761,7 @@ async def test_authorize_rejection_does_not_partially_increment_other_buckets(
             **limits,
         )
     )[0]
-    before = {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_authorize*")
-    }
+    before = {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_authorize*")}
 
     allowed, _ = await acquire_email_authorize_slot(
         client_digest,
@@ -742,10 +771,7 @@ async def test_authorize_rejection_does_not_partially_increment_other_buckets(
     )
 
     assert allowed is False
-    assert {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_authorize*")
-    } == before
+    assert {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_authorize*")} == before
 
 
 @pytest.mark.parametrize("limited_dimension", ["ip", "flow", "global"])
@@ -917,10 +943,7 @@ async def test_send_request_rejection_does_not_increment_other_bucket_and_return
         )
     )[0]
     await fake_redis.expire("email_rate_send_request_global", 7)
-    before = {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_send_request*")
-    }
+    before = {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_send_request*")}
 
     allowed, retry_after = await acquire_email_send_request_slot(
         "victim-ip",
@@ -931,10 +954,7 @@ async def test_send_request_rejection_does_not_increment_other_bucket_and_return
 
     assert allowed is False
     assert 1 <= retry_after <= 7
-    assert {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_send_request*")
-    } == before
+    assert {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_send_request*")} == before
 
 
 async def test_concurrent_verify_flow_rate_limit_is_a_strict_bound(fake_redis):
@@ -967,10 +987,7 @@ async def test_verify_request_rejection_does_not_increment_other_bucket(fake_red
             global_limit=1,
         )
     )[0]
-    before = {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_verify_request*")
-    }
+    before = {key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_verify_request*")}
 
     allowed, retry_after = await acquire_email_verify_request_slot(
         "victim-ip",
@@ -982,8 +999,7 @@ async def test_verify_request_rejection_does_not_increment_other_bucket(fake_red
     assert allowed is False
     assert retry_after > 0
     assert {
-        key: await fake_redis.get(key)
-        async for key in fake_redis.scan_iter("email_rate_verify_request*")
+        key: await fake_redis.get(key) async for key in fake_redis.scan_iter("email_rate_verify_request*")
     } == before
 
 
@@ -1252,13 +1268,9 @@ async def test_authorize_flow_gate_enforces_ip_client_and_global_limits(fake_red
     await clear_authorize_rates()
     ip_config = _settings(email_authorize_rate_limit_per_ip=1)
     assert (await email_login_service.acquire_email_flow_creation_slot("appA", "203.0.113.1", config=ip_config))[0]
-    assert not (
-        await email_login_service.acquire_email_flow_creation_slot("appB", "203.0.113.1", config=ip_config)
-    )[0]
+    assert not (await email_login_service.acquire_email_flow_creation_slot("appB", "203.0.113.1", config=ip_config))[0]
     assert await fake_redis.get("email_rate_authorize_global") == "1"
-    assert not (
-        await email_login_service.acquire_email_flow_creation_slot("appC", "203.0.113.1", config=ip_config)
-    )[0]
+    assert not (await email_login_service.acquire_email_flow_creation_slot("appC", "203.0.113.1", config=ip_config))[0]
     assert await fake_redis.get("email_rate_authorize_global") == "1"
 
     await clear_authorize_rates()
@@ -1367,13 +1379,16 @@ async def test_code_has_max_attempts_and_is_single_use():
     )
     code = sender.sent[0][1]
 
-    assert await email_login_service.verify_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        code="000000" if code != "000000" else "999999",
-        db=db,
-        config=config,
-    ) is None
+    assert (
+        await email_login_service.verify_login_code(
+            flow_id=started.flow_id,
+            flow_cookie=started.cookie_value,
+            code="000000" if code != "000000" else "999999",
+            db=db,
+            config=config,
+        )
+        is None
+    )
     verified = await email_login_service.verify_login_code(
         flow_id=started.flow_id,
         flow_cookie=started.cookie_value,
@@ -1382,13 +1397,16 @@ async def test_code_has_max_attempts_and_is_single_use():
         config=config,
     )
     assert verified is not None and verified.user.id == user.id
-    assert await email_login_service.verify_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        code=code,
-        db=db,
-        config=config,
-    ) is None
+    assert (
+        await email_login_service.verify_login_code(
+            flow_id=started.flow_id,
+            flow_cookie=started.cookie_value,
+            code=code,
+            db=db,
+            config=config,
+        )
+        is None
+    )
 
 
 async def test_concurrent_verification_consumes_code_once():
@@ -1439,20 +1457,26 @@ async def test_three_wrong_attempts_lock_the_code():
     wrong = "000000" if code != "000000" else "999999"
 
     for _ in range(3):
-        assert await email_login_service.verify_login_code(
+        assert (
+            await email_login_service.verify_login_code(
+                flow_id=started.flow_id,
+                flow_cookie=started.cookie_value,
+                code=wrong,
+                db=db,
+                config=config,
+            )
+            is None
+        )
+    assert (
+        await email_login_service.verify_login_code(
             flow_id=started.flow_id,
             flow_cookie=started.cookie_value,
-            code=wrong,
+            code=code,
             db=db,
             config=config,
-        ) is None
-    assert await email_login_service.verify_login_code(
-        flow_id=started.flow_id,
-        flow_cookie=started.cookie_value,
-        code=code,
-        db=db,
-        config=config,
-    ) is None
+        )
+        is None
+    )
 
 
 async def test_disabled_sender_is_fail_closed_before_user_lookup():

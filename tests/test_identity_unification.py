@@ -88,13 +88,9 @@ class _IdentitySession:
                 expected = next(value for key, value in params.items() if key.startswith("id_"))
                 values = [user for user in self.store.users if str(user.id) == str(expected)]
             else:
-                expected = next(
-                    value for key, value in params.items() if key.startswith(("lower_", "btrim_"))
-                )
+                expected = next(value for key, value in params.items() if key.startswith(("lower_", "btrim_")))
                 values = [
-                    user
-                    for user in self.store.users
-                    if email_login_service.normalize_email(user.email) == expected
+                    user for user in self.store.users if email_login_service.normalize_email(user.email) == expected
                 ]
             if "users.is_active IS true" in sql:
                 values = [user for user in values if user.is_active]
@@ -117,6 +113,8 @@ class _IdentitySession:
                     if social.provider == provider and str(social.user_id) == str(user_id)
                 ]
             return _Result(values)
+        if "FROM applications" in str(statement):
+            return _Result(["Fusion"])  # 验证码邮件写发起登录的应用名
         raise AssertionError(f"未支持的查询: {statement}")
 
     def add(self, value):
@@ -172,7 +170,12 @@ class _Sender(EmailSender):
         self.sent: list[tuple[str, str, int]] = []
 
     async def send_login_code(
-        self, recipient: str, code: str, ttl_seconds: int, delivery_id: str | None = None
+        self,
+        recipient: str,
+        code: str,
+        ttl_seconds: int,
+        delivery_id: str | None = None,
+        brand_name: str | None = None,
     ) -> None:
         self.sent.append((recipient, code, ttl_seconds))
 

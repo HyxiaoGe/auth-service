@@ -46,12 +46,18 @@ class _Result:
     def scalars(self):
         return _Scalars(self.values)
 
+    def scalar_one_or_none(self):
+        return self.values[0] if len(self.values) == 1 else None
+
 
 class _DB:
-    def __init__(self, users=()):
+    def __init__(self, users=(), app_name="Fusion"):
         self.users = list(users)
+        self.app_name = app_name  # applications.name：验证码邮件写它
 
-    async def execute(self, _query):
+    async def execute(self, query):
+        if "applications" in str(query):
+            return _Result([self.app_name])
         return _Result(self.users)
 
 
@@ -63,7 +69,12 @@ class _Sender:
         self.sent = []
 
     async def send_login_code(
-        self, recipient: str, code: str, ttl_seconds: int, delivery_id: str | None = None
+        self,
+        recipient: str,
+        code: str,
+        ttl_seconds: int,
+        delivery_id: str | None = None,
+        brand_name: str | None = None,
     ):
         self.sent.append((recipient, code, ttl_seconds))
         if self.fail:
@@ -881,7 +892,9 @@ async def test_headless_send_limits_recovery_before_application_without_consumin
     assert await fake_redis.get(f"email_rate_send_request_flow:{started.flow_id}") == "1"
     assert [key async for key in fake_redis.scan_iter("email_rate_verify_flow:*")] == []
     request_keys = [key async for key in fake_redis.scan_iter("email_rate_send_request*")]
-    request_values = [await fake_redis.get(key) for key in request_keys if not key.startswith("email_rate_send_request_flow:")]
+    request_values = [
+        await fake_redis.get(key) for key in request_keys if not key.startswith("email_rate_send_request_flow:")
+    ]
     assert sorted(request_values) == ["2", "2"]
 
 

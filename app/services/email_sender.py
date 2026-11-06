@@ -102,16 +102,14 @@ def resolve_brand_name(config: Settings, brand_name: str | None) -> str:
 def login_code_content(brand_name: str, code: str, ttl_seconds: int, recipient: str) -> tuple[str, str, str]:
     """登录验证码邮件的 (主题, 纯文本, HTML)。SMTP 和 Resend 两个发信器共用，别各写一份。
 
-    写法上照着“一眼看出是验证码、别被当成垃圾邮件”来：主题带应用名和验证码；正文说清是谁、
-    为什么收到、不是本人怎么办；写明发给哪个邮箱、自动发送请勿回复；纯文本和 HTML 内容一致；
-    HTML 只用内联样式和表格布局，不放图片、脚本和外链。
+    写法上照着“一眼看出是验证码、别被当成垃圾邮件”来：主题带应用名和验证码，正文不再重复标题；
+    正文说清是谁、用哪个邮箱、为什么收到、不是本人怎么办；页脚只说自动发送请勿回复；纯文本和 HTML
+    内容一致；HTML 只用内联样式和表格布局，不放图片、脚本和外链。
     """
     minutes = max(1, ttl_seconds // 60)
     b, c, r = escape(brand_name), escape(code), escape(recipient)
     subject = f"{brand_name} 登录验证码：{code}"
     text = (
-        f"{brand_name} 登录验证码\n"
-        f"\n"
         f"你正在用邮箱 {recipient} 登录 {brand_name}，验证码是：\n"
         f"\n"
         f"    {code}\n"
@@ -128,9 +126,6 @@ def login_code_content(brand_name: str, code: str, ttl_seconds: int, recipient: 
         '<meta name="x-apple-disable-message-reformatting">'
         f"<title>{b} 登录验证码</title></head>"
         '<body style="margin:0;padding:0;background:#f4f5f7;">'
-        # 预览文字：收件箱列表里主题后面那一句
-        '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f5f7;">'
-        f"验证码 {c}，{minutes} 分钟内有效。</div>"
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f7;">'
         '<tr><td align="center" style="padding:32px 16px;">'
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
@@ -138,9 +133,8 @@ def login_code_content(brand_name: str, code: str, ttl_seconds: int, recipient: 
         "<tr><td style=\"padding:28px 32px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
         "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;\">"
         f'<div style="font-size:15px;font-weight:600;color:#6b7280;letter-spacing:.02em;">{b}</div>'
-        '<h1 style="margin:14px 0 0;font-size:22px;line-height:30px;font-weight:600;color:#111827;">登录验证码</h1>'
-        f'<p style="margin:12px 0 0;font-size:15px;line-height:24px;color:#374151;">'
-        f'你正在用邮箱 <span style="color:#111827;">{r}</span> 登录 {b}，请在登录页面填写下面的验证码：</p>'
+        f'<p style="margin:14px 0 0;font-size:16px;line-height:26px;color:#111827;">'
+        f"你正在用邮箱 {r} 登录 {b}，请在登录页面填写下面的验证码：</p>"
         "</td></tr>"
         '<tr><td style="padding:20px 32px 0;">'
         '<div style="background:#f3f4f6;border-radius:10px;padding:18px 0;text-align:center;'
@@ -156,7 +150,7 @@ def login_code_content(brand_name: str, code: str, ttl_seconds: int, recipient: 
         "</table>"
         "<p style=\"margin:16px 0 0;max-width:480px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
         "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:12px;line-height:18px;color:#9ca3af;\">"
-        f"这封邮件发送至 {r}，由 {b} 登录系统自动发送，请勿直接回复。</p>"
+        f"由 {b} 登录系统自动发送，请勿直接回复。</p>"
         "</td></tr></table></body></html>"
     )
     return subject, text, html

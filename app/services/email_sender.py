@@ -102,13 +102,13 @@ def resolve_brand_name(config: Settings, brand_name: str | None) -> str:
 def login_code_content(brand_name: str, code: str, ttl_seconds: int, recipient: str) -> tuple[str, str, str]:
     """登录验证码邮件的 (主题, 纯文本, HTML)。SMTP 和 Resend 两个发信器共用，别各写一份。
 
-    写法上照着“一眼看出是验证码、别被当成垃圾邮件”来：主题带应用名和验证码，正文不再重复标题；
+    写法上照着“一眼看出是验证码、别被当成垃圾邮件”来：主题只写应用名和“登录验证码”，验证码只在正文出现一次；
     正文说清是谁、用哪个邮箱、为什么收到、不是本人怎么办；页脚只说自动发送请勿回复；纯文本和 HTML
     内容一致；HTML 只用内联样式和表格布局，不放图片、脚本和外链。
     """
     minutes = max(1, ttl_seconds // 60)
     b, c, r = escape(brand_name), escape(code), escape(recipient)
-    subject = f"{brand_name} 登录验证码：{code}"
+    subject = f"{brand_name} 登录验证码"  # 验证码只放正文，主题不重复
     text = (
         f"你正在用邮箱 {recipient} 登录 {brand_name}，验证码是：\n"
         f"\n"

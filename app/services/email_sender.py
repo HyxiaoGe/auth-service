@@ -38,6 +38,7 @@ class EmailSender(Protocol):
         code: str,
         ttl_seconds: int,
         delivery_id: str | None = None,
+        brand_name: str | None = None,
     ) -> None: ...
 
     async def preflight(self) -> None: ...
@@ -92,6 +93,29 @@ def is_email_login_available(config: Settings) -> bool:
     return config.email_login_ready and is_smtp_verified()
 
 
+def resolve_brand_name(config: Settings, brand_name: str | None) -> str:
+    """邮件里写哪个名字：优先发起登录的应用名（applications.name），没有就退回全局的 SMTP_FROM_NAME，再退回发件地址。"""
+    return (brand_name or "").strip() or config.smtp_from_name.strip() or config.smtp_from_email
+
+
+def login_code_content(brand_name: str, code: str, ttl_seconds: int) -> tuple[str, str, str]:
+    """登录验证码邮件的 (主题, 纯文本, HTML)。SMTP 和 Resend 两个发信器共用，别各写一份。"""
+    minutes = max(1, ttl_seconds // 60)
+    safe_brand_name = escape(brand_name)
+    safe_code = escape(code)
+    subject = f"{brand_name} 登录验证码"
+    text = f"你的 {brand_name} 登录验证码是：{code}\n\n验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。"
+    html = (
+        '<!doctype html><html lang="zh-CN"><body>'
+        f"<h1>{safe_brand_name} 登录验证码</h1>"
+        "<p>请使用以下验证码完成登录：</p>"
+        f'<p style="font-size:28px;font-weight:700;letter-spacing:6px">{safe_code}</p>'
+        f"<p>验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。</p>"
+        "</body></html>"
+    )
+    return subject, text, html
+
+
 class DisabledEmailSender:
     available = False
 
@@ -101,6 +125,7 @@ class DisabledEmailSender:
         code: str,
         ttl_seconds: int,
         delivery_id: str | None = None,
+        brand_name: str | None = None,
     ) -> None:
         raise EmailDeliveryError("email login is unavailable")
 
@@ -120,9 +145,12 @@ class SMTPEmailSender:
         code: str,
         ttl_seconds: int,
         delivery_id: str | None = None,
+        brand_name: str | None = None,
     ) -> None:
         try:
-            await asyncio.to_thread(self._send_sync, recipient, code, ttl_seconds)
+            await asyncio.to_thread(
+                self._send_sync, recipient, code, ttl_seconds, resolve_brand_name(self.config, brand_name)
+            )
         except smtplib.SMTPRecipientsRefused as exc:
             # 单个邮箱不存在、已满或策略拒收不代表 SMTP 连接、鉴权或发件人配置整体失效。
             raise EmailDeliveryError("SMTP delivery failed") from exc
@@ -170,10 +198,11 @@ class SMTPEmailSender:
         subject: str,
         body: str,
         html_body: str | None = None,
+        from_name: str | None = None,
     ) -> EmailMessage:
         message = EmailMessage()
         message["Subject"] = subject
-        message["From"] = formataddr((self.config.smtp_from_name, self.config.smtp_from_email))
+        message["From"] = formataddr((from_name or self.config.smtp_from_name, self.config.smtp_from_email))
         message["To"] = recipient
         message["Date"] = formatdate(localtime=False, usegmt=True)
         sender_domain = parseaddr(self.config.smtp_from_email)[1].rpartition("@")[2] or None
@@ -184,26 +213,10 @@ class SMTPEmailSender:
             message.add_alternative(html_body, subtype="html")
         return message
 
-    def _send_sync(self, recipient: str, code: str, ttl_seconds: int) -> None:
-        minutes = max(1, ttl_seconds // 60)
-        brand_name = self.config.smtp_from_name.strip() or self.config.smtp_from_email
-        safe_brand_name = escape(brand_name)
-        safe_code = escape(code)
+    def _send_sync(self, recipient: str, code: str, ttl_seconds: int, brand_name: str) -> None:
+        subject, body, html_body = login_code_content(brand_name, code, ttl_seconds)
         message = self._message(
-            recipient=recipient,
-            subject=f"{brand_name} 登录验证码",
-            body=(
-                f"你的 {brand_name} 登录验证码是：{code}\n\n"
-                f"验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。"
-            ),
-            html_body=(
-                '<!doctype html><html lang="zh-CN"><body>'
-                f"<h1>{safe_brand_name} 登录验证码</h1>"
-                "<p>请使用以下验证码完成登录：</p>"
-                f'<p style="font-size:28px;font-weight:700;letter-spacing:6px">{safe_code}</p>'
-                f"<p>验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。</p>"
-                "</body></html>"
-            ),
+            recipient=recipient, subject=subject, body=body, html_body=html_body, from_name=brand_name
         )
 
         with self._connection() as client:
@@ -286,11 +299,10 @@ class ResendEmailSender:
         code: str,
         ttl_seconds: int,
         delivery_id: str | None = None,
+        brand_name: str | None = None,
     ) -> None:
-        minutes = max(1, ttl_seconds // 60)
-        brand_name = self.config.smtp_from_name.strip() or self.config.smtp_from_email
-        safe_brand_name = escape(brand_name)
-        safe_code = escape(code)
+        brand = resolve_brand_name(self.config, brand_name)
+        subject, text, html = login_code_content(brand, code, ttl_seconds)
         idempotency_key = self._idempotency_key(
             "login-otp",
             delivery_id or "direct",
@@ -302,19 +314,10 @@ class ResendEmailSender:
                 recipient=recipient,
                 message_type="login_otp",
                 idempotency_key=idempotency_key,
-                subject=f"{brand_name} 登录验证码",
-                text=(
-                    f"你的 {brand_name} 登录验证码是：{code}\n\n"
-                    f"验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。"
-                ),
-                html=(
-                    '<!doctype html><html lang="zh-CN"><body>'
-                    f"<h1>{safe_brand_name} 登录验证码</h1>"
-                    "<p>请使用以下验证码完成登录：</p>"
-                    f'<p style="font-size:28px;font-weight:700;letter-spacing:6px">{safe_code}</p>'
-                    f"<p>验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。</p>"
-                    "</body></html>"
-                ),
+                subject=subject,
+                text=text,
+                html=html,
+                from_name=brand,
             )
         except EmailDeliveryError as exc:
             # 收件人、请求参数和团队瞬时限流只影响本次请求；只有凭据、
@@ -355,8 +358,9 @@ class ResendEmailSender:
         subject: str,
         text: str,
         html: str | None = None,
+        from_name: str | None = None,
     ) -> None:
-        sender = formataddr((self.config.smtp_from_name, self.config.smtp_from_email))
+        sender = formataddr((from_name or self.config.smtp_from_name, self.config.smtp_from_email))
         payload = {
             "from": sender,
             "to": [recipient],
@@ -380,9 +384,7 @@ class ResendEmailSender:
             status_code = exc.response.status_code
             raise EmailDeliveryError(
                 "Resend delivery failed",
-                revokes_global_readiness=(
-                    status_code in (401, 403) or status_code >= 500
-                ),
+                revokes_global_readiness=(status_code in (401, 403) or status_code >= 500),
             ) from None
         except Exception:
             raise EmailDeliveryError("Resend delivery failed") from None

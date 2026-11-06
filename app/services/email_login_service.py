@@ -7,10 +7,11 @@ import secrets
 from dataclasses import dataclass, field
 from time import time as current_timestamp
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.models import User
+from app.models import Application, User
 from app.services.email_sender import EmailDeliveryError, EmailSender
 from app.services.identity_service import (
     InactiveIdentityError,
@@ -61,6 +62,7 @@ class EmailCodeDelivery:
     code: str
     code_mac: str
     ttl_seconds: int
+    brand_name: str | None = None  # 发起登录的应用名（applications.name），邮件里写它；查不到就用全局的 SMTP_FROM_NAME
 
 
 @dataclass(frozen=True)
@@ -255,7 +257,8 @@ async def request_login_code(
     config = config or get_settings()
     if not config.email_login_ready or not sender.available:
         return CodeRequestResult(accepted=False, unavailable=True)
-    if await get_bound_email_flow(flow_id, flow_cookie, config=config) is None:
+    flow = await get_bound_email_flow(flow_id, flow_cookie, config=config)
+    if flow is None:
         return CodeRequestResult(accepted=False)
 
     normalized = normalize_email(email)
@@ -294,11 +297,26 @@ async def request_login_code(
         code=code,
         code_mac=payload["code_mac"],
         ttl_seconds=config.email_code_ttl_seconds,
+        brand_name=await application_display_name(str(flow.get("client_id") or ""), db),
     )
     if defer_delivery:
         return CodeRequestResult(accepted=True, delivery=delivery)
     await complete_login_code_delivery(delivery, sender)
     return CodeRequestResult(accepted=True)
+
+
+async def application_display_name(client_id: str, db: AsyncSession) -> str | None:
+    """发起登录的应用叫什么（applications.name）：邮件主题和正文用它，而不是全局的 SMTP_FROM_NAME。查不到就 None。"""
+    if not client_id:
+        return None
+    try:
+        result = await db.execute(select(Application.name).where(Application.client_id == client_id))
+        name = result.scalar_one_or_none()
+    except Exception:
+        # 只是邮件里的名字，查不到不该挡住发验证码；退回全局品牌
+        logger.warning("email_login.application_name_lookup_failed")
+        return None
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 async def complete_login_code_delivery(delivery: EmailCodeDelivery, sender: EmailSender) -> None:
@@ -311,6 +329,7 @@ async def complete_login_code_delivery(delivery: EmailCodeDelivery, sender: Emai
                 delivery.code,
                 delivery.ttl_seconds,
                 delivery_id=delivery.flow_id,
+                brand_name=delivery.brand_name,
             )
         except EmailDeliveryError:
             # 不记录可与 flow 关联的账号存在性或投递差异；SMTP 全局状态由独立探测恢复。

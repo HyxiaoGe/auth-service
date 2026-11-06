@@ -131,7 +131,7 @@ def test_login_code_message_has_branded_multipart_content_and_transactional_head
     sender._send_sync("user@example.com", "123456", 300, "<Fusion & Friends>")
 
     message = sent_messages[0]
-    assert str(message["Subject"]) == "<Fusion & Friends> 登录验证码"
+    assert str(message["Subject"]) == "<Fusion & Friends> 登录验证码：123456"
     assert parsedate_to_datetime(message["Date"]) is not None
     assert message["Message-ID"].endswith("@example.com>")
     assert message["Auto-Submitted"] == "auto-generated"
@@ -143,6 +143,10 @@ def test_login_code_message_has_branded_multipart_content_and_transactional_head
     assert "123456" in html
     assert "<Fusion & Friends>" not in html
     assert "&lt;Fusion &amp; Friends&gt;" in html
+    assert "user@example.com" in plain and "user@example.com" in html  # 写明发给谁
+    assert "请勿直接回复" in plain and "请勿直接回复" in html
+    assert message["X-Auto-Response-Suppress"] == "All" and len(message["X-Entity-Ref-ID"]) == 32
+    assert "<img" not in html and "<script" not in html and "href=" not in html  # 不放图、脚本、外链
 
 
 async def test_wait_for_smtp_verification_observes_monitor_state_without_sending(monkeypatch):
@@ -348,6 +352,36 @@ def test_login_code_message_from_header_carries_the_application_name(monkeypatch
     SMTPEmailSender(_settings(smtp_from_name="Fusion"))._send_sync("user@example.com", "654321", 300, "LingDraft")
 
     message = sent_messages[0]
-    assert str(message["Subject"]) == "LingDraft 登录验证码"
+    assert str(message["Subject"]) == "LingDraft 登录验证码：654321"
     assert str(message["From"]) == "LingDraft <login@example.com>"
-    assert "你的 LingDraft 登录验证码是：654321" in message.get_body(preferencelist=("plain",)).get_content()
+    plain = message.get_body(preferencelist=("plain",)).get_content()
+    assert "登录 LingDraft，验证码是：" in plain and "    654321" in plain and "Fusion" not in plain
+
+
+def test_two_login_code_messages_do_not_share_an_entity_ref(monkeypatch):
+    refs = []
+
+    class FakeSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def starttls(self, **_kwargs):
+            return None
+
+        def login(self, *_args):
+            return None
+
+        def send_message(self, message):
+            refs.append(message["X-Entity-Ref-ID"])
+
+    monkeypatch.setattr(email_sender.smtplib, "SMTP", FakeSMTP)
+    sender = SMTPEmailSender(_settings())
+    sender._send_sync("user@example.com", "111111", 300, "Fusion")
+    sender._send_sync("user@example.com", "222222", 300, "Fusion")
+    assert len(set(refs)) == 2

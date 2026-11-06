@@ -9,6 +9,7 @@ import secrets
 import smtplib
 import ssl
 import time
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from email.message import EmailMessage
@@ -98,20 +99,65 @@ def resolve_brand_name(config: Settings, brand_name: str | None) -> str:
     return (brand_name or "").strip() or config.smtp_from_name.strip() or config.smtp_from_email
 
 
-def login_code_content(brand_name: str, code: str, ttl_seconds: int) -> tuple[str, str, str]:
-    """登录验证码邮件的 (主题, 纯文本, HTML)。SMTP 和 Resend 两个发信器共用，别各写一份。"""
+def login_code_content(brand_name: str, code: str, ttl_seconds: int, recipient: str) -> tuple[str, str, str]:
+    """登录验证码邮件的 (主题, 纯文本, HTML)。SMTP 和 Resend 两个发信器共用，别各写一份。
+
+    写法上照着“一眼看出是验证码、别被当成垃圾邮件”来：主题带应用名和验证码；正文说清是谁、
+    为什么收到、不是本人怎么办；写明发给哪个邮箱、自动发送请勿回复；纯文本和 HTML 内容一致；
+    HTML 只用内联样式和表格布局，不放图片、脚本和外链。
+    """
     minutes = max(1, ttl_seconds // 60)
-    safe_brand_name = escape(brand_name)
-    safe_code = escape(code)
-    subject = f"{brand_name} 登录验证码"
-    text = f"你的 {brand_name} 登录验证码是：{code}\n\n验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。"
+    b, c, r = escape(brand_name), escape(code), escape(recipient)
+    subject = f"{brand_name} 登录验证码：{code}"
+    text = (
+        f"{brand_name} 登录验证码\n"
+        f"\n"
+        f"你正在用邮箱 {recipient} 登录 {brand_name}，验证码是：\n"
+        f"\n"
+        f"    {code}\n"
+        f"\n"
+        f"验证码 {minutes} 分钟内有效，只能用一次，请回到登录页面填写。\n"
+        f"如果不是你本人在登录，忽略这封邮件就行，账号不会有任何变化。\n"
+        f"\n"
+        f"——\n"
+        f"这封邮件由 {brand_name} 登录系统自动发送，请勿直接回复。"
+    )
     html = (
-        '<!doctype html><html lang="zh-CN"><body>'
-        f"<h1>{safe_brand_name} 登录验证码</h1>"
-        "<p>请使用以下验证码完成登录：</p>"
-        f'<p style="font-size:28px;font-weight:700;letter-spacing:6px">{safe_code}</p>'
-        f"<p>验证码将在 {minutes} 分钟后失效。若非本人操作，请忽略此邮件。</p>"
-        "</body></html>"
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<meta name="x-apple-disable-message-reformatting">'
+        f"<title>{b} 登录验证码</title></head>"
+        '<body style="margin:0;padding:0;background:#f4f5f7;">'
+        # 预览文字：收件箱列表里主题后面那一句
+        '<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f4f5f7;">'
+        f"验证码 {c}，{minutes} 分钟内有效。</div>"
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f7;">'
+        '<tr><td align="center" style="padding:32px 16px;">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="max-width:480px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;">'
+        "<tr><td style=\"padding:28px 32px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+        "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;\">"
+        f'<div style="font-size:15px;font-weight:600;color:#6b7280;letter-spacing:.02em;">{b}</div>'
+        '<h1 style="margin:14px 0 0;font-size:22px;line-height:30px;font-weight:600;color:#111827;">登录验证码</h1>'
+        f'<p style="margin:12px 0 0;font-size:15px;line-height:24px;color:#374151;">'
+        f'你正在用邮箱 <span style="color:#111827;">{r}</span> 登录 {b}，请在登录页面填写下面的验证码：</p>'
+        "</td></tr>"
+        '<tr><td style="padding:20px 32px 0;">'
+        '<div style="background:#f3f4f6;border-radius:10px;padding:18px 0;text-align:center;'
+        "font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'Courier New',monospace;"
+        f'font-size:32px;line-height:40px;font-weight:700;letter-spacing:10px;color:#111827;">{c}</div>'
+        "</td></tr>"
+        "<tr><td style=\"padding:16px 32px 28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+        "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;\">"
+        f'<p style="margin:0;font-size:14px;line-height:22px;color:#374151;">验证码 {minutes} 分钟内有效，只能用一次。</p>'
+        '<p style="margin:8px 0 0;font-size:14px;line-height:22px;color:#6b7280;">'
+        "如果不是你本人在登录，忽略这封邮件就行，账号不会有任何变化。</p>"
+        "</td></tr>"
+        "</table>"
+        "<p style=\"margin:16px 0 0;max-width:480px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
+        "'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:12px;line-height:18px;color:#9ca3af;\">"
+        f"这封邮件发送至 {r}，由 {b} 登录系统自动发送，请勿直接回复。</p>"
+        "</td></tr></table></body></html>"
     )
     return subject, text, html
 
@@ -208,13 +254,15 @@ class SMTPEmailSender:
         sender_domain = parseaddr(self.config.smtp_from_email)[1].rpartition("@")[2] or None
         message["Message-ID"] = make_msgid(domain=sender_domain)
         message["Auto-Submitted"] = "auto-generated"
+        message["X-Auto-Response-Suppress"] = "All"  # 让 Outlook 之类别对它发自动回复 / 外出通知
+        message["X-Entity-Ref-ID"] = uuid.uuid4().hex  # 每封不同，Gmail 不会把几次验证码串成一个会话
         message.set_content(body)
         if html_body is not None:
             message.add_alternative(html_body, subtype="html")
         return message
 
     def _send_sync(self, recipient: str, code: str, ttl_seconds: int, brand_name: str) -> None:
-        subject, body, html_body = login_code_content(brand_name, code, ttl_seconds)
+        subject, body, html_body = login_code_content(brand_name, code, ttl_seconds, recipient)
         message = self._message(
             recipient=recipient, subject=subject, body=body, html_body=html_body, from_name=brand_name
         )
@@ -302,7 +350,7 @@ class ResendEmailSender:
         brand_name: str | None = None,
     ) -> None:
         brand = resolve_brand_name(self.config, brand_name)
-        subject, text, html = login_code_content(brand, code, ttl_seconds)
+        subject, text, html = login_code_content(brand, code, ttl_seconds, recipient)
         idempotency_key = self._idempotency_key(
             "login-otp",
             delivery_id or "direct",
@@ -366,7 +414,11 @@ class ResendEmailSender:
             "to": [recipient],
             "subject": subject,
             "text": text,
-            "headers": {"Auto-Submitted": "auto-generated"},
+            "headers": {
+                "Auto-Submitted": "auto-generated",
+                "X-Auto-Response-Suppress": "All",
+                "X-Entity-Ref-ID": uuid.uuid4().hex,
+            },
             "tags": [{"name": "message_type", "value": message_type}],
         }
         if html is not None:

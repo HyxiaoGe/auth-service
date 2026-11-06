@@ -131,7 +131,7 @@ def test_login_code_message_has_branded_multipart_content_and_transactional_head
     sender._send_sync("user@example.com", "123456", 300, "<Fusion & Friends>")
 
     message = sent_messages[0]
-    assert str(message["Subject"]) == "<Fusion & Friends> 登录验证码：123456"
+    assert str(message["Subject"]) == "<Fusion & Friends> 登录验证码"  # 主题不带验证码
     assert parsedate_to_datetime(message["Date"]) is not None
     assert message["Message-ID"].endswith("@example.com>")
     assert message["Auto-Submitted"] == "auto-generated"
@@ -352,7 +352,7 @@ def test_login_code_message_from_header_carries_the_application_name(monkeypatch
     SMTPEmailSender(_settings(smtp_from_name="Fusion"))._send_sync("user@example.com", "654321", 300, "LingDraft")
 
     message = sent_messages[0]
-    assert str(message["Subject"]) == "LingDraft 登录验证码：654321"
+    assert str(message["Subject"]) == "LingDraft 登录验证码"
     assert str(message["From"]) == "LingDraft <login@example.com>"
     plain = message.get_body(preferencelist=("plain",)).get_content()
     assert "登录 LingDraft，验证码是：" in plain and "    654321" in plain and "Fusion" not in plain
